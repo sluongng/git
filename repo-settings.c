@@ -15,43 +15,43 @@ void prepare_repo_settings(struct repository *r)
 	/* Defaults */
 	memset(&r->settings, -1, sizeof(r->settings));
 
-	if (!repo_config_get_bool(r, "core.commitgraph", &value))
+	if (!repo_config_get_bool(r, "core.commitGraph", &value))
 		r->settings.core_commit_graph = value;
-	if (!repo_config_get_bool(r, "gc.writecommitgraph", &value))
+	if (!repo_config_get_bool(r, "gc.writeCommitGraph", &value))
 		r->settings.gc_write_commit_graph = value;
 	UPDATE_DEFAULT_BOOL(r->settings.core_commit_graph, 1);
 	UPDATE_DEFAULT_BOOL(r->settings.gc_write_commit_graph, 1);
 
 	if (!repo_config_get_int(r, "index.version", &value))
 		r->settings.index_version = value;
-	if (!repo_config_get_maybe_bool(r, "core.untrackedcache", &value)) {
+	if (!repo_config_get_maybe_bool(r, "core.untrackedCache", &value)) {
 		if (value == 0)
 			r->settings.core_untracked_cache = UNTRACKED_CACHE_REMOVE;
 		else
 			r->settings.core_untracked_cache = UNTRACKED_CACHE_WRITE;
-	} else if (!repo_config_get_string(r, "core.untrackedcache", &strval)) {
+	} else if (!repo_config_get_string(r, "core.untrackedCache", &strval)) {
 		if (!strcasecmp(strval, "keep"))
 			r->settings.core_untracked_cache = UNTRACKED_CACHE_KEEP;
 
 		free(strval);
 	}
 
-	if (!repo_config_get_string(r, "fetch.negotiationalgorithm", &strval)) {
+	if (!repo_config_get_string(r, "fetch.negotiationAlgorithm", &strval)) {
 		if (!strcasecmp(strval, "skipping"))
 			r->settings.fetch_negotiation_algorithm = FETCH_NEGOTIATION_SKIPPING;
 		else
 			r->settings.fetch_negotiation_algorithm = FETCH_NEGOTIATION_DEFAULT;
 	}
 
-	if (!repo_config_get_bool(r, "pack.usesparse", &value))
+	if (!repo_config_get_bool(r, "pack.useSparse", &value))
 		r->settings.pack_use_sparse = value;
 	UPDATE_DEFAULT_BOOL(r->settings.pack_use_sparse, 1);
 
-	if (!repo_config_get_bool(r, "feature.manyfiles", &value) && value) {
+	if (!repo_config_get_bool(r, "feature.manyFiles", &value) && value) {
 		UPDATE_DEFAULT_BOOL(r->settings.index_version, 4);
 		UPDATE_DEFAULT_BOOL(r->settings.core_untracked_cache, UNTRACKED_CACHE_WRITE);
 	}
-	if (!repo_config_get_bool(r, "fetch.writecommitgraph", &value))
+	if (!repo_config_get_bool(r, "fetch.writeCommitGraph", &value))
 		r->settings.fetch_write_commit_graph = value;
 	if (!repo_config_get_bool(r, "feature.experimental", &value) && value) {
 		UPDATE_DEFAULT_BOOL(r->settings.fetch_negotiation_algorithm, FETCH_NEGOTIATION_SKIPPING);
