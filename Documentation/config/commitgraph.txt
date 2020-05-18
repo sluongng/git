@@ -1,0 +1,3 @@
+commitgraph.writeChangedPaths::
+  A boolean to enable/disable inclusion of changed paths bloom
+  filter in the commitgraph. Default to false.

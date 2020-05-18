@@ -31,6 +31,7 @@ struct repo_settings {
 	int core_commit_graph;
 	int gc_write_commit_graph;
 	int fetch_write_commit_graph;
+	int commit_graph_write_changed_paths;
 
 	int index_version;
 	enum untracked_cache_setting core_untracked_cache;

@@ -53,6 +53,8 @@ void prepare_repo_settings(struct repository *r)
 	}
 	if (!repo_config_get_bool(r, "fetch.writeCommitGraph", &value))
 		r->settings.fetch_write_commit_graph = value;
+	if (!repo_config_get_bool(r, "commitgraph.writeChangedPaths", &value))
+		r->settings.commit_graph_write_changed_paths = value;
 	if (!repo_config_get_bool(r, "feature.experimental", &value) && value) {
 		UPDATE_DEFAULT_BOOL(r->settings.fetch_negotiation_algorithm, FETCH_NEGOTIATION_SKIPPING);
 		UPDATE_DEFAULT_BOOL(r->settings.fetch_write_commit_graph, 1);
