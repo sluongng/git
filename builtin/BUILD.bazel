@@ -136,5 +136,8 @@ cc_library(
         "write-tree.c",
     ],
     copts = GIT_COPTS,
-    deps = ["//:libgit"],
+    deps = [
+        "//:libgit",
+        "//:generated_h",
+    ],
 )

@@ -13,6 +13,153 @@ exports_files([
     "git-web--browse",
 ])
 
+sh_binary(
+    name = "generate_cmdlist",
+    srcs = ["generate-cmdlist.sh"],
+)
+
+genrule(
+    name = "command_list_h",
+    srcs = ["command-list.txt"] + glob(["Documentation/git*.adoc"]),
+    tools = [":generate_cmdlist"],
+    outs = ["command-list.h"],
+    cmd = """
+      set -euo pipefail
+      $(location :generate_cmdlist) \
+        --exclude-program foo --exclude-program bar \
+        . "$@"
+    """,
+)
+
+sh_binary(
+    name = "generate_hooklist",
+    srcs = ["generate-hooklist.sh"],
+)
+
+genrule(
+    name = "hook_list_h",
+    srcs = ["Documentation/githooks.adoc"],
+    tools = [":generate_hooklist"],
+    outs = ["hook-list.h"],
+    cmd = """
+      set -euo pipefail
+      $(location :generate_hooklist) . "$@"
+    """,
+)
+
+sh_binary(
+    name = "generate_configlist",
+    srcs = ["generate-configlist.sh"],
+)
+
+genrule(
+    name = "config_list_h",
+    srcs = glob([
+        "Documentation/*config.adoc",
+        "Documentation/config/*.adoc",
+    ]),
+    tools = [":generate_configlist"],
+    outs = ["config-list.h"],
+    cmd = """
+      set -euo pipefail
+      $(location :generate_configlist) . "$@"
+    """,
+)
+
+sh_binary(
+    name = "git_version_gen",
+    srcs = ["GIT-VERSION-GEN"],
+)
+
+# Generates GIT-VERSION-FILE from its .in, like the Makefile does.
+genrule(
+    name = "git_version_file",
+    srcs = ["GIT-VERSION-FILE.in"],
+    tools = [":git_version_gen"],
+    outs = ["GIT-VERSION-FILE"],
+    stamp = 1,
+    cmd = """
+      set -euo pipefail
+
+      # stamp=1 makes these status files available in the execroot.
+      STABLE=bazel-out/stable-status.txt
+
+      # Map STABLE_* vars -> env vars that GIT-VERSION-GEN understands.
+      while read -r k v; do
+        case "$$k" in
+          STABLE_GIT_VERSION) export GIT_VERSION="$$v" ;;
+          STABLE_GIT_BUILT_FROM_COMMIT) export GIT_BUILT_FROM_COMMIT="$$v" ;;
+          STABLE_GIT_DATE) export GIT_DATE="$$v" ;;
+          STABLE_GIT_USER_AGENT) export GIT_USER_AGENT="$$v" ;;
+        esac
+      done < "$$STABLE"
+
+      $(location :git_version_gen) "$$(pwd)" "$(location GIT-VERSION-FILE.in)" "$@"
+    """,
+)
+
+# Generates GIT-USER-AGENT as a file (one line), like Make does.
+genrule(
+    name = "git_user_agent_file",
+    tools = [":git_version_gen"],
+    outs = ["GIT-USER-AGENT"],
+    stamp = 1,
+    cmd = """
+      set -euo pipefail
+      STABLE=bazel-out/stable-status.txt
+
+      while read -r k v; do
+        case "$$k" in
+          STABLE_GIT_VERSION) export GIT_VERSION="$$v" ;;
+          STABLE_GIT_BUILT_FROM_COMMIT) export GIT_BUILT_FROM_COMMIT="$$v" ;;
+          STABLE_GIT_DATE) export GIT_DATE="$$v" ;;
+          STABLE_GIT_USER_AGENT) export GIT_USER_AGENT="$$v" ;;
+        esac
+      done < "$$STABLE"
+
+      # Ask GIT-VERSION-GEN to render just the placeholder we want.
+      $(location :git_version_gen) "$$(pwd)" --format='@GIT_USER_AGENT@' "$@"
+    """,
+)
+
+# Generates version-def.h from version-def.h.in, depending on the two files above.
+genrule(
+    name = "version_def_h",
+    srcs = [
+        "version-def.h.in",
+        ":git_version_file",
+        ":git_user_agent_file",
+    ],
+    tools = [":git_version_gen"],
+    outs = ["version-def.h"],
+    stamp = 1,
+    cmd = """
+      set -euo pipefail
+      STABLE=bazel-out/stable-status.txt
+
+      while read -r k v; do
+        case "$$k" in
+          STABLE_GIT_VERSION) export GIT_VERSION="$$v" ;;
+          STABLE_GIT_BUILT_FROM_COMMIT) export GIT_BUILT_FROM_COMMIT="$$v" ;;
+          STABLE_GIT_DATE) export GIT_DATE="$$v" ;;
+          STABLE_GIT_USER_AGENT) export GIT_USER_AGENT="$$v" ;;
+        esac
+      done < "$$STABLE"
+
+      $(location :git_version_gen) "$$(pwd)" "$(location version-def.h.in)" "$@"
+    """,
+)
+
+cc_library(
+    name = "generated_h",
+    hdrs = [
+        "command-list.h",
+        "config-list.h",
+        "hook-list.h",
+        "version-def.h",
+    ],
+)
+
 # =============================================================================
 # Fine-grained header libraries
 # Each header gets its own cc_library target for precise dependency tracking.
@@ -723,6 +870,7 @@ cc_library(
     hdrs = glob(["*.h"]),
     copts = GIT_COPTS,
     deps = [
+        "//:generated_h",
         "//compat",
         "//compat/simple-ipc",
         "//compiler-tricks",

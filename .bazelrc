@@ -16,5 +16,8 @@ common --experimental_profile_include_target_label
 common --experimental_profile_include_primary_output
 common --noslim_profile
 
+common --stamp
+common --workspace_status_command=contrib/bazel/workspace_status.sh
+
 # User-specific .bazelrc
 try-import %workspace%/user.bazelrc
