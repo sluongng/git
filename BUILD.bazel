@@ -21,7 +21,6 @@ sh_binary(
 genrule(
     name = "command_list_h",
     srcs = ["command-list.txt"] + glob(["Documentation/git*.adoc"]),
-    tools = [":generate_cmdlist"],
     outs = ["command-list.h"],
     cmd = """
       set -euo pipefail
@@ -29,6 +28,7 @@ genrule(
         --exclude-program foo --exclude-program bar \
         . "$@"
     """,
+    tools = [":generate_cmdlist"],
 )
 
 sh_binary(
@@ -39,12 +39,12 @@ sh_binary(
 genrule(
     name = "hook_list_h",
     srcs = ["Documentation/githooks.adoc"],
-    tools = [":generate_hooklist"],
     outs = ["hook-list.h"],
     cmd = """
       set -euo pipefail
       $(location :generate_hooklist) . "$@"
     """,
+    tools = [":generate_hooklist"],
 )
 
 sh_binary(
@@ -58,12 +58,12 @@ genrule(
         "Documentation/*config.adoc",
         "Documentation/config/*.adoc",
     ]),
-    tools = [":generate_configlist"],
     outs = ["config-list.h"],
     cmd = """
       set -euo pipefail
       $(location :generate_configlist) . "$@"
     """,
+    tools = [":generate_configlist"],
 )
 
 sh_binary(
@@ -75,9 +75,7 @@ sh_binary(
 genrule(
     name = "git_version_file",
     srcs = ["GIT-VERSION-FILE.in"],
-    tools = [":git_version_gen"],
     outs = ["GIT-VERSION-FILE"],
-    stamp = 1,
     cmd = """
       set -euo pipefail
 
@@ -96,14 +94,14 @@ genrule(
 
       $(location :git_version_gen) "$$(pwd)" "$(location GIT-VERSION-FILE.in)" "$@"
     """,
+    stamp = 1,
+    tools = [":git_version_gen"],
 )
 
 # Generates GIT-USER-AGENT as a file (one line), like Make does.
 genrule(
     name = "git_user_agent_file",
-    tools = [":git_version_gen"],
     outs = ["GIT-USER-AGENT"],
-    stamp = 1,
     cmd = """
       set -euo pipefail
       STABLE=bazel-out/stable-status.txt
@@ -120,6 +118,8 @@ genrule(
       # Ask GIT-VERSION-GEN to render just the placeholder we want.
       $(location :git_version_gen) "$$(pwd)" --format='@GIT_USER_AGENT@' "$@"
     """,
+    stamp = 1,
+    tools = [":git_version_gen"],
 )
 
 # Generates version-def.h from version-def.h.in, depending on the two files above.
@@ -130,9 +130,7 @@ genrule(
         ":git_version_file",
         ":git_user_agent_file",
     ],
-    tools = [":git_version_gen"],
     outs = ["version-def.h"],
-    stamp = 1,
     cmd = """
       set -euo pipefail
       STABLE=bazel-out/stable-status.txt
@@ -148,6 +146,8 @@ genrule(
 
       $(location :git_version_gen) "$$(pwd)" "$(location version-def.h.in)" "$@"
     """,
+    stamp = 1,
+    tools = [":git_version_gen"],
 )
 
 cc_library(
