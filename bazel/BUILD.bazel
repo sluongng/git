@@ -1,0 +1,5 @@
+# Provides a package for loading .bzl files and module patch files.
+
+exports_files([
+    "patches/libexpat-bazel9-load-cc_test.patch",
+])

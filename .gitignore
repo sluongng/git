@@ -232,6 +232,7 @@
 /TAGS
 /cscope*
 /compile_commands.json
+/bazel-*
 /.cache/
 *.hcc
 *.obj

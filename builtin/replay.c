@@ -18,8 +18,8 @@
 #include "refs.h"
 #include "revision.h"
 #include "strmap.h"
-#include <oidset.h>
-#include <tree.h>
+#include "oidset.h"
+#include "tree.h"
 
 enum ref_action_mode {
 	REF_ACTION_UPDATE,

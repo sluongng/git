@@ -18,7 +18,7 @@
    <http://www.gnu.org/licenses/>.  */
 
 #include "git-compat-util.h"
-#include <gettext.h>
+#include "gettext.h"
 #include "obstack.h"
 
 /* NOTE BEFORE MODIFYING THIS FILE: This version number must be

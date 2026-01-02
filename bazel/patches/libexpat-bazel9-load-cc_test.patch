@@ -1,0 +1,11 @@
+diff --git a/BUILD.bazel b/BUILD.bazel
+index d04f137..6f4a383 100644
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -1,5 +1,5 @@
+ load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
+-load("@rules_cc//cc:defs.bzl", "cc_library")
++load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+ 
+ expand_template(
+     name = "expat_config_h",
