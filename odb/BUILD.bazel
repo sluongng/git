@@ -1,0 +1,30 @@
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "odb",
+    srcs = [
+        "streaming.c",
+    ] + glob(
+        ["**/*.h"],
+        allow_empty = True,
+        exclude = ["streaming.h"],
+    ),
+    hdrs = [
+        "streaming.h",
+    ],
+    copts = GIT_COPTS,
+    deps = [
+        "//:convert_h",
+        "//:environment_h",
+        "//:git_compat_util_h",
+        "//:object_file_h",
+        "//:odb_h",
+        "//:packfile_h",
+        "//:replace_object_h",
+        "//:repository_h",
+        "//sha1dc",
+        "//sha256",
+    ],
+)

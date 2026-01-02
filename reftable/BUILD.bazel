@@ -1,0 +1,33 @@
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "reftable",
+    srcs = [
+        "basics.c",
+        "block.c",
+        "blocksource.c",
+        "error.c",
+        "fsck.c",
+        "iter.c",
+        "merged.c",
+        "pq.c",
+        "record.c",
+        "stack.c",
+        "system.c",
+        "table.c",
+        "tree.c",
+        "writer.c",
+    ],
+    hdrs = glob(
+        ["**/*.h"],
+        allow_empty = True,
+    ),
+    copts = GIT_COPTS,
+    deps = [
+        "//:git_compat_util_h",
+        "//:lockfile_h",
+        "//:tempfile_h",
+    ],
+)

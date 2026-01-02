@@ -1,0 +1,30 @@
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "negotiator",
+    srcs = [
+        "default.c",
+        "noop.c",
+        "skipping.c",
+    ],
+    hdrs = [
+        "default.h",
+        "noop.h",
+        "skipping.h",
+    ],
+    copts = GIT_COPTS,
+    deps = [
+        "//:commit_h",
+        "//:fetch_negotiator_h",
+        "//:git_compat_util_h",
+        "//:hex_h",
+        "//:prio_queue_h",
+        "//:refs_h",
+        "//:repository_h",
+        "//:tag_h",
+        "//sha1dc",
+        "//sha256",
+    ],
+)

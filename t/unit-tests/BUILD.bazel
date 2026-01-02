@@ -1,0 +1,15 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "unit_test_lib",
+    srcs = ["test-lib.c"],
+    hdrs = ["test-lib.h"],
+    copts = GIT_COPTS,
+    include_prefix = "t/unit-tests",
+    deps = [
+        "//:libgit",
+    ],
+)

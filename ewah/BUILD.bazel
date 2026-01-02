@@ -1,0 +1,26 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "ewah",
+    srcs = [
+        "bitmap.c",
+        "ewah_bitmap.c",
+        "ewah_io.c",
+        "ewah_rlw.c",
+    ] + glob(
+        ["**/*.h"],
+        allow_empty = True,
+        exclude = ["ewok.h"],
+    ),
+    hdrs = [
+        "ewok.h",
+    ],
+    copts = GIT_COPTS,
+    deps = [
+        "//:git_compat_util_h",
+        "//:strbuf_h",
+    ],
+)

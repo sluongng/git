@@ -1,0 +1,23 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "sha1dc",
+    srcs = [
+        "sha1.c",
+        "ubc_check.c",
+    ] + glob(
+        ["**/*.h"],
+        allow_empty = True,
+        exclude = ["sha1.h"],
+    ),
+    hdrs = [
+        "sha1.h",
+    ],
+    copts = GIT_COPTS,
+    deps = [
+        "//:git_compat_util_h",
+    ],
+)

@@ -1,0 +1,46 @@
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "trace2",
+    srcs = [
+        "tr2_cfg.c",
+        "tr2_cmd_name.c",
+        "tr2_ctr.c",
+        "tr2_dst.c",
+        "tr2_sid.c",
+        "tr2_sysenv.c",
+        "tr2_tbuf.c",
+        "tr2_tgt_event.c",
+        "tr2_tgt_normal.c",
+        "tr2_tgt_perf.c",
+        "tr2_tls.c",
+        "tr2_tmr.c",
+    ],
+    hdrs = glob(
+        ["**/*.h"],
+        allow_empty = True,
+    ),
+    copts = GIT_COPTS,
+    deps = [
+        "//:abspath_h",
+        "//:config_h",
+        "//:dir_h",
+        "//:git_compat_util_h",
+        "//:hex_h",
+        "//:json_writer_h",
+        "//:quote_h",
+        "//:repository_h",
+        "//:run_command_h",
+        "//:sigchain_h",
+        "//:strbuf_h",
+        "//:thread_utils_h",
+        "//:trace2_h",
+        "//:trace_h",
+        "//:version_h",
+        "//:wildmatch_h",
+        "//sha1dc",
+        "//sha256",
+    ],
+)

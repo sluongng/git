@@ -1,0 +1,38 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "xdiff",
+    srcs = [
+        "xdiffi.c",
+        "xemit.c",
+        "xhistogram.c",
+        "xmerge.c",
+        "xpatience.c",
+        "xprepare.c",
+        "xutils.c",
+    ] + glob(
+        ["**/*.h"],
+        allow_empty = True,
+        exclude = [
+            "xdiff.h",
+            "xdiffi.h",
+            "xmacros.h",
+            "xtypes.h",
+            "xutils.h",
+        ],
+    ),
+    hdrs = [
+        "xdiff.h",
+        "xdiffi.h",
+        "xmacros.h",
+        "xtypes.h",
+        "xutils.h",
+    ],
+    copts = GIT_COPTS,
+    deps = [
+        "//:git_compat_util_h",
+    ],
+)

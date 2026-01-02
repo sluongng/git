@@ -1,0 +1,54 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+# Header-only library for headers that git-compat-util.h includes.
+# This MUST NOT depend on //:compat_util_hdrs to avoid cycles.
+cc_library(
+    name = "compat_headers",
+    hdrs = glob(
+        ["**/*.h"],
+        allow_empty = True,
+    ),
+    deps = [
+        "//:sane_ctype_h",
+    ],
+)
+
+# Implementation library - can safely depend on git-compat-util.h
+cc_library(
+    name = "compat",
+    srcs = [
+        "fopen.c",
+        "linux/procinfo.c",
+        "nonblock.c",
+        "obstack.c",
+        "open.c",
+        "qsort_s.c",
+        "strlcpy.c",
+        "terminal.c",
+    ],
+    copts = GIT_COPTS,
+    deps = [
+        ":compat_headers",
+        "//:abspath_h",
+        "//:alloc_h",
+        "//:config_h",
+        "//:dir_h",
+        "//:environment_h",
+        "//:gettext_h",
+        "//:git_compat_util_h",
+        "//:hash_h",
+        "//:hashmap_h",
+        "//:path_h",
+        "//:quote_h",
+        "//:run_command_h",
+        "//:sigchain_h",
+        "//:strbuf_h",
+        "//:string_list_h",
+        "//:symlinks_h",
+        "//:trace2_h",
+        "//:utf8_h",
+    ],
+)

@@ -1,0 +1,897 @@
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("//contrib/bazel:defs.bzl", "GIT_COPTS", "GIT_LINKOPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "GIT-BUILD-OPTIONS",
+    "Makefile",
+    "git-sh-i18n",
+    "git-sh-setup",
+    "git-submodule",
+    "git-web--browse",
+])
+
+# =============================================================================
+# Fine-grained header libraries
+# Each header gets its own cc_library target for precise dependency tracking.
+# =============================================================================
+
+# Base header needed by compat/posix.h
+cc_library(
+    name = "sane_ctype_h",
+    hdrs = ["sane-ctype.h"],
+)
+
+# Core compatibility header - almost everything depends on this
+cc_library(
+    name = "git_compat_util_h",
+    hdrs = ["git-compat-util.h"],
+    textual_hdrs = [
+        "banned.h",
+        "wrapper.h",
+    ],
+    deps = ["//compat:compat_headers"],
+)
+
+# Individual header libraries (alphabetical)
+cc_library(
+    name = "abspath_h",
+    hdrs = ["abspath.h"],
+)
+
+cc_library(
+    name = "alloc_h",
+    hdrs = ["alloc.h"],
+)
+
+cc_library(
+    name = "chdir_notify_h",
+    hdrs = ["chdir-notify.h"],
+)
+
+cc_library(
+    name = "add_interactive_h",
+    hdrs = ["add-interactive.h"],
+    deps = [":color_h"],
+)
+
+cc_library(
+    name = "color_h",
+    hdrs = ["color.h"],
+)
+
+cc_library(
+    name = "commit_h",
+    hdrs = ["commit.h"],
+    deps = [
+        ":add_interactive_h",
+        ":object_h",
+    ],
+)
+
+cc_library(
+    name = "config_h",
+    hdrs = ["config.h"],
+    deps = [
+        ":hashmap_h",
+        ":parse_h",
+        ":repository_h",
+        ":string_list_h",
+    ],
+)
+
+cc_library(
+    name = "convert_h",
+    hdrs = ["convert.h"],
+    deps = [
+        ":hash_h",
+        ":string_list_h",
+    ],
+)
+
+cc_library(
+    name = "copy_h",
+    hdrs = ["copy.h"],
+)
+
+cc_library(
+    name = "dir_h",
+    hdrs = ["dir.h"],
+    deps = [
+        ":hash_h",
+        ":hashmap_h",
+        ":pathspec_h",
+        ":statinfo_h",
+        ":strbuf_h",
+    ],
+)
+
+cc_library(
+    name = "pathspec_h",
+    hdrs = ["pathspec.h"],
+)
+
+cc_library(
+    name = "dir_iterator_h",
+    hdrs = ["dir-iterator.h"],
+)
+
+cc_library(
+    name = "environment_h",
+    hdrs = ["environment.h"],
+)
+
+cc_library(
+    name = "fetch_negotiator_h",
+    hdrs = ["fetch-negotiator.h"],
+)
+
+cc_library(
+    name = "fsck_h",
+    hdrs = ["fsck.h"],
+    deps = [":oidset_h"],
+)
+
+cc_library(
+    name = "oidset_h",
+    hdrs = ["oidset.h"],
+    deps = [":khash_h"],
+)
+
+cc_library(
+    name = "khash_h",
+    hdrs = ["khash.h"],
+)
+
+cc_library(
+    name = "gettext_h",
+    hdrs = ["gettext.h"],
+)
+
+cc_library(
+    name = "hash_h",
+    hdrs = ["hash.h"],
+    deps = [":sha1dc_git_h"],
+)
+
+cc_library(
+    name = "sha1dc_git_h",
+    hdrs = ["sha1dc_git.h"],
+)
+
+cc_library(
+    name = "hashmap_h",
+    hdrs = ["hashmap.h"],
+)
+
+cc_library(
+    name = "hex_h",
+    hdrs = ["hex.h"],
+    deps = [":hex_ll_h"],
+)
+
+cc_library(
+    name = "hex_ll_h",
+    hdrs = ["hex-ll.h"],
+)
+
+cc_library(
+    name = "ident_h",
+    hdrs = ["ident.h"],
+)
+
+cc_library(
+    name = "iterator_h",
+    hdrs = ["iterator.h"],
+)
+
+cc_library(
+    name = "json_writer_h",
+    hdrs = ["json-writer.h"],
+)
+
+cc_library(
+    name = "lockfile_h",
+    hdrs = ["lockfile.h"],
+    deps = [":tempfile_h"],
+)
+
+cc_library(
+    name = "object_h",
+    hdrs = ["object.h"],
+    deps = [":hash_h"],
+)
+
+cc_library(
+    name = "object_file_h",
+    hdrs = ["object-file.h"],
+    deps = [
+        ":git_zlib_h",
+        ":object_h",
+    ],
+)
+
+cc_library(
+    name = "git_zlib_h",
+    hdrs = ["git-zlib.h"],
+)
+
+cc_library(
+    name = "odb_h",
+    hdrs = ["odb.h"],
+    deps = [
+        ":oidmap_h",
+        ":oidset_h",
+        ":thread_utils_h",
+    ],
+)
+
+cc_library(
+    name = "oidmap_h",
+    hdrs = ["oidmap.h"],
+)
+
+cc_library(
+    name = "packfile_h",
+    hdrs = ["packfile.h"],
+    deps = [":list_h"],
+)
+
+cc_library(
+    name = "parse_h",
+    hdrs = ["parse.h"],
+)
+
+cc_library(
+    name = "path_h",
+    hdrs = ["path.h"],
+)
+
+cc_library(
+    name = "pkt_line_h",
+    hdrs = ["pkt-line.h"],
+)
+
+cc_library(
+    name = "prio_queue_h",
+    hdrs = ["prio-queue.h"],
+)
+
+cc_library(
+    name = "quote_h",
+    hdrs = ["quote.h"],
+)
+
+cc_library(
+    name = "refs_h",
+    hdrs = ["refs.h"],
+    deps = [":commit_h"],
+)
+
+cc_library(
+    name = "replace_object_h",
+    hdrs = ["replace-object.h"],
+)
+
+cc_library(
+    name = "repo_settings_h",
+    hdrs = ["repo-settings.h"],
+)
+
+cc_library(
+    name = "repository_h",
+    hdrs = ["repository.h"],
+    deps = [
+        ":repo_settings_h",
+        ":strmap_h",
+    ],
+)
+
+cc_library(
+    name = "revision_h",
+    hdrs = ["revision.h"],
+    deps = [
+        ":commit_h",
+        ":commit_slab_decl_h",
+        ":decorate_h",
+        ":diff_h",
+        ":grep_h",
+        ":ident_h",
+        ":list_objects_filter_options_h",
+        ":notes_h",
+        ":oidset_h",
+        ":pretty_h",
+        ":strvec_h",
+    ],
+)
+
+cc_library(
+    name = "commit_slab_decl_h",
+    hdrs = ["commit-slab-decl.h"],
+)
+
+cc_library(
+    name = "decorate_h",
+    hdrs = ["decorate.h"],
+)
+
+cc_library(
+    name = "list_objects_filter_options_h",
+    hdrs = ["list-objects-filter-options.h"],
+)
+
+cc_library(
+    name = "diff_h",
+    hdrs = ["diff.h"],
+)
+
+cc_library(
+    name = "pretty_h",
+    hdrs = ["pretty.h"],
+    deps = [":date_h"],
+)
+
+cc_library(
+    name = "date_h",
+    hdrs = ["date.h"],
+)
+
+cc_library(
+    name = "grep_h",
+    hdrs = ["grep.h"],
+    deps = [
+        ":thread_utils_h",
+        ":userdiff_h",
+    ],
+)
+
+cc_library(
+    name = "userdiff_h",
+    hdrs = ["userdiff.h"],
+    deps = [":notes_cache_h"],
+)
+
+cc_library(
+    name = "notes_cache_h",
+    hdrs = ["notes-cache.h"],
+    deps = [":notes_h"],
+)
+
+cc_library(
+    name = "notes_h",
+    hdrs = ["notes.h"],
+)
+
+cc_library(
+    name = "run_command_h",
+    hdrs = ["run-command.h"],
+    deps = [
+        ":strvec_h",
+        ":thread_utils_h",
+    ],
+)
+
+cc_library(
+    name = "strvec_h",
+    hdrs = ["strvec.h"],
+)
+
+cc_library(
+    name = "setup_h",
+    hdrs = ["setup.h"],
+)
+
+cc_library(
+    name = "sigchain_h",
+    hdrs = ["sigchain.h"],
+)
+
+cc_library(
+    name = "simple_ipc_h",
+    hdrs = ["simple-ipc.h"],
+)
+
+cc_library(
+    name = "statinfo_h",
+    hdrs = ["statinfo.h"],
+)
+
+cc_library(
+    name = "strbuf_h",
+    hdrs = ["strbuf.h"],
+)
+
+cc_library(
+    name = "string_list_h",
+    hdrs = ["string-list.h"],
+)
+
+cc_library(
+    name = "strmap_h",
+    hdrs = ["strmap.h"],
+    deps = [":hashmap_h"],
+)
+
+cc_library(
+    name = "symlinks_h",
+    hdrs = ["symlinks.h"],
+)
+
+cc_library(
+    name = "tag_h",
+    hdrs = ["tag.h"],
+)
+
+cc_library(
+    name = "list_h",
+    hdrs = ["list.h"],
+)
+
+cc_library(
+    name = "tempfile_h",
+    hdrs = ["tempfile.h"],
+    deps = [
+        ":list_h",
+        ":strbuf_h",
+    ],
+)
+
+cc_library(
+    name = "thread_utils_h",
+    hdrs = ["thread-utils.h"],
+)
+
+cc_library(
+    name = "trace_h",
+    hdrs = ["trace.h"],
+)
+
+cc_library(
+    name = "trace2_h",
+    hdrs = ["trace2.h"],
+)
+
+cc_library(
+    name = "unix_socket_h",
+    hdrs = ["unix-socket.h"],
+)
+
+cc_library(
+    name = "unix_stream_server_h",
+    hdrs = ["unix-stream-server.h"],
+)
+
+cc_library(
+    name = "utf8_h",
+    hdrs = ["utf8.h"],
+)
+
+cc_library(
+    name = "version_h",
+    hdrs = ["version.h"],
+)
+
+cc_library(
+    name = "wildmatch_h",
+    hdrs = ["wildmatch.h"],
+)
+
+cc_library(
+    name = "worktree_h",
+    hdrs = ["worktree.h"],
+)
+
+cc_library(
+    name = "write_or_die_h",
+    hdrs = ["write-or-die.h"],
+)
+
+cc_library(
+    name = "libgit",
+    srcs = [
+        "abspath.c",
+        "add-interactive.c",
+        "add-patch.c",
+        "advice.c",
+        "alias.c",
+        "alloc.c",
+        "apply.c",
+        "archive.c",
+        "archive-tar.c",
+        "archive-zip.c",
+        "attr.c",
+        "base85.c",
+        "bisect.c",
+        "blame.c",
+        "blob.c",
+        "bloom.c",
+        "branch.c",
+        "bundle.c",
+        "bundle-uri.c",
+        "cache-tree.c",
+        "cbtree.c",
+        "chdir-notify.c",
+        "checkout.c",
+        "chunk-format.c",
+        "color.c",
+        "column.c",
+        "combine-diff.c",
+        "commit.c",
+        "commit-graph.c",
+        "commit-reach.c",
+        "common-exit.c",
+        "common-init.c",
+        "config.c",
+        "connect.c",
+        "connected.c",
+        "convert.c",
+        "copy.c",
+        "credential.c",
+        "csum-file.c",
+        "ctype.c",
+        "date.c",
+        "decorate.c",
+        "delta-islands.c",
+        "diagnose.c",
+        "diff.c",
+        "diff-delta.c",
+        "diff-lib.c",
+        "diff-merges.c",
+        "diff-no-index.c",
+        "diffcore-break.c",
+        "diffcore-delta.c",
+        "diffcore-order.c",
+        "diffcore-pickaxe.c",
+        "diffcore-rename.c",
+        "diffcore-rotate.c",
+        "dir.c",
+        "dir-iterator.c",
+        "editor.c",
+        "entry.c",
+        "environment.c",
+        "exec-cmd.c",
+        "fetch-negotiator.c",
+        "fetch-pack.c",
+        "fmt-merge-msg.c",
+        "fsck.c",
+        "fsmonitor.c",
+        "fsmonitor-ipc.c",
+        "fsmonitor-settings.c",
+        "gettext.c",
+        "git-zlib.c",
+        "gpg-interface.c",
+        "graph.c",
+        "grep.c",
+        "hash.c",
+        "hash-lookup.c",
+        "hashmap.c",
+        "help.c",
+        "hex.c",
+        "hex-ll.c",
+        "hook.c",
+        "ident.c",
+        "json-writer.c",
+        "kwset.c",
+        "levenshtein.c",
+        "line-log.c",
+        "line-range.c",
+        "linear-assignment.c",
+        "list-objects.c",
+        "list-objects-filter.c",
+        "list-objects-filter-options.c",
+        "lockfile.c",
+        "log-tree.c",
+        "loose.c",
+        "ls-refs.c",
+        "mailinfo.c",
+        "mailmap.c",
+        "match-trees.c",
+        "mem-pool.c",
+        "merge.c",
+        "merge-blobs.c",
+        "merge-ll.c",
+        "merge-ort.c",
+        "merge-ort-wrappers.c",
+        "midx.c",
+        "midx-write.c",
+        "name-hash.c",
+        "notes.c",
+        "notes-cache.c",
+        "notes-merge.c",
+        "notes-utils.c",
+        "object.c",
+        "object-file.c",
+        "object-file-convert.c",
+        "object-name.c",
+        "odb.c",
+        "oid-array.c",
+        "oidmap.c",
+        "oidset.c",
+        "oidtree.c",
+        "pack-bitmap.c",
+        "pack-bitmap-write.c",
+        "pack-check.c",
+        "pack-mtimes.c",
+        "pack-objects.c",
+        "pack-refs.c",
+        "pack-revindex.c",
+        "pack-write.c",
+        "packfile.c",
+        "pager.c",
+        "parallel-checkout.c",
+        "parse.c",
+        "parse-options.c",
+        "parse-options-cb.c",
+        "patch-delta.c",
+        "patch-ids.c",
+        "path.c",
+        "path-walk.c",
+        "pathspec.c",
+        "pkt-line.c",
+        "preload-index.c",
+        "pretty.c",
+        "prio-queue.c",
+        "progress.c",
+        "promisor-remote.c",
+        "prompt.c",
+        "protocol.c",
+        "protocol-caps.c",
+        "prune-packed.c",
+        "pseudo-merge.c",
+        "quote.c",
+        "range-diff.c",
+        "reachable.c",
+        "read-cache.c",
+        "rebase.c",
+        "rebase-interactive.c",
+        "ref-filter.c",
+        "reflog.c",
+        "reflog-walk.c",
+        "refs.c",
+        "refspec.c",
+        "remote.c",
+        "repack.c",
+        "repack-cruft.c",
+        "repack-filtered.c",
+        "repack-geometry.c",
+        "repack-midx.c",
+        "repack-promisor.c",
+        "replace-object.c",
+        "repo-settings.c",
+        "repository.c",
+        "rerere.c",
+        "reset.c",
+        "resolve-undo.c",
+        "revision.c",
+        "run-command.c",
+        "send-pack.c",
+        "sequencer.c",
+        "serve.c",
+        "server-info.c",
+        "setup.c",
+        "sha1dc_git.c",
+        "shallow.c",
+        "sideband.c",
+        "sigchain.c",
+        "sparse-index.c",
+        "split-index.c",
+        "stable-qsort.c",
+        "statinfo.c",
+        "strbuf.c",
+        "string-list.c",
+        "strmap.c",
+        "strvec.c",
+        "sub-process.c",
+        "submodule.c",
+        "submodule-config.c",
+        "symlinks.c",
+        "tag.c",
+        "tempfile.c",
+        "thread-utils.c",
+        "tmp-objdir.c",
+        "trace.c",
+        "trace2.c",
+        "trailer.c",
+        "transport.c",
+        "transport-helper.c",
+        "tree.c",
+        "tree-diff.c",
+        "tree-walk.c",
+        "unix-socket.c",
+        "unix-stream-server.c",
+        "unpack-trees.c",
+        "upload-pack.c",
+        "url.c",
+        "urlmatch.c",
+        "usage.c",
+        "userdiff.c",
+        "utf8.c",
+        "varint.c",
+        "version.c",
+        "versioncmp.c",
+        "walker.c",
+        "wildmatch.c",
+        "worktree.c",
+        "wrapper.c",
+        "write-or-die.c",
+        "ws.c",
+        "wt-status.c",
+        "xdiff-interface.c",
+    ],
+    hdrs = glob(["*.h"]),
+    copts = GIT_COPTS,
+    deps = [
+        "//compat",
+        "//compat/simple-ipc",
+        "//compiler-tricks",
+        "//ewah",
+        "//negotiator",
+        "//odb",
+        "//refs",
+        "//reftable",
+        "//sha1dc",
+        "//sha256",
+        "//trace2",
+        "//xdiff",
+        "@zlib",
+    ],
+)
+
+cc_binary(
+    name = "git",
+    srcs = [
+        "common-main.c",
+        "git.c",
+    ],
+    copts = GIT_COPTS,
+    linkopts = GIT_LINKOPTS,
+    deps = [
+        ":libgit",
+        "//builtin",
+    ],
+)
+
+cc_binary(
+    name = "git-http-backend",
+    srcs = [
+        "common-main.c",
+        "http-backend.c",
+    ],
+    copts = GIT_COPTS,
+    linkopts = GIT_LINKOPTS,
+    deps = [":libgit"],
+)
+
+cc_binary(
+    name = "git-http-fetch",
+    srcs = [
+        "common-main.c",
+        "http.c",
+        "http-fetch.c",
+        "http-walker.c",
+    ],
+    copts = GIT_COPTS,
+    linkopts = GIT_LINKOPTS,
+    deps = [
+        ":libgit",
+        "@curl",
+    ],
+)
+
+cc_binary(
+    name = "git-http-push",
+    srcs = [
+        "common-main.c",
+        "http.c",
+        "http-push.c",
+    ],
+    copts = GIT_COPTS,
+    linkopts = GIT_LINKOPTS,
+    deps = [
+        ":libgit",
+        "@curl",
+        "@libexpat",
+    ],
+)
+
+cc_binary(
+    name = "git-imap-send",
+    srcs = [
+        "common-main.c",
+        "http.c",
+        "imap-send.c",
+    ],
+    copts = GIT_COPTS,
+    linkopts = GIT_LINKOPTS,
+    deps = [
+        ":libgit",
+        "@curl",
+    ],
+)
+
+cc_binary(
+    name = "git-sh-i18n--envsubst",
+    srcs = [
+        "common-main.c",
+        "sh-i18n--envsubst.c",
+    ],
+    copts = GIT_COPTS,
+    linkopts = GIT_LINKOPTS,
+    deps = [
+        ":libgit",
+    ],
+)
+
+cc_binary(
+    name = "git-remote-http",
+    srcs = [
+        "common-main.c",
+        "http.c",
+        "http-walker.c",
+        "remote-curl.c",
+    ],
+    copts = GIT_COPTS,
+    linkopts = GIT_LINKOPTS,
+    deps = [
+        ":libgit",
+        "@curl",
+    ],
+)
+
+copy_file(
+    name = "git-remote-ftp-link",
+    src = ":git-remote-http",
+    out = "git-remote-ftp",
+    allow_symlink = True,
+    is_executable = True,
+)
+
+copy_file(
+    name = "git-remote-ftps-link",
+    src = ":git-remote-http",
+    out = "git-remote-ftps",
+    allow_symlink = True,
+    is_executable = True,
+)
+
+copy_file(
+    name = "git-remote-https-link",
+    src = ":git-remote-http",
+    out = "git-remote-https",
+    allow_symlink = True,
+    is_executable = True,
+)
+
+copy_file(
+    name = "git-merge-resolve-link",
+    src = "git-merge-resolve.sh",
+    out = "git-merge-resolve",
+    allow_symlink = True,
+    is_executable = True,
+)
+
+copy_file(
+    name = "git-merge-one-file-link",
+    src = "git-merge-one-file.sh",
+    out = "git-merge-one-file",
+    allow_symlink = True,
+    is_executable = True,
+)
+
+copy_file(
+    name = "git-merge-octopus-link",
+    src = "git-merge-octopus.sh",
+    out = "git-merge-octopus",
+    allow_symlink = True,
+    is_executable = True,
+)
+
+copy_file(
+    name = "git-merge-ours-link",
+    src = ":git",
+    out = "git-merge-ours",
+    allow_symlink = True,
+    is_executable = True,
+)

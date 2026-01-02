@@ -1,0 +1,58 @@
+load("//contrib/bazel:defs.bzl", "GIT_COPTS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "refs",
+    srcs = [
+        "debug.c",
+        "files-backend.c",
+        "iterator.c",
+        "packed-backend.c",
+        "ref-cache.c",
+        "reftable-backend.c",
+    ] + glob(
+        ["**/*.h"],
+        allow_empty = True,
+        exclude = ["refs-internal.h"],
+    ),
+    hdrs = [
+        "refs-internal.h",
+    ],
+    copts = GIT_COPTS,
+    deps = [
+        "//:abspath_h",
+        "//:chdir_notify_h",
+        "//:config_h",
+        "//:copy_h",
+        "//:dir_h",
+        "//:dir_iterator_h",
+        "//:environment_h",
+        "//:fsck_h",
+        "//:gettext_h",
+        "//:git_compat_util_h",
+        "//:hash_h",
+        "//:hex_h",
+        "//:ident_h",
+        "//:iterator_h",
+        "//:lockfile_h",
+        "//:object_h",
+        "//:parse_h",
+        "//:path_h",
+        "//:refs_h",
+        "//:repo_settings_h",
+        "//:repository_h",
+        "//:revision_h",
+        "//:setup_h",
+        "//:statinfo_h",
+        "//:strmap_h",
+        "//:trace2_h",
+        "//:trace_h",
+        "//:wildmatch_h",
+        "//:worktree_h",
+        "//:write_or_die_h",
+        "//reftable",
+        "//sha1dc",
+        "//sha256",
+    ],
+)
