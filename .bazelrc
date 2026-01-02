@@ -1,0 +1,28 @@
+startup --digest_function=BLAKE3
+startup --host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES=1
+
+common --enable_platform_specific_config
+common --experimental_platform_in_output_dir
+
+common --test_output=errors
+common --test_summary=terse
+
+common --incompatible_strict_action_env
+
+common --check_direct_dependencies=error
+common --module_mirrors=https://bcr.cloudflaremirrors.com
+
+common --experimental_profile_include_target_label
+common --experimental_profile_include_primary_output
+common --noslim_profile
+
+common --workspace_status_command=contrib/bazel/workspace_status_stable.sh
+common:release --stamp
+common:release --workspace_status_command=contrib/bazel/workspace_status.sh
+
+test:macos --test_env=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/sbin
+
+common --@curl//:ssl_lib=openssl
+
+# User-specific .bazelrc
+try-import %workspace%/user.bazelrc
