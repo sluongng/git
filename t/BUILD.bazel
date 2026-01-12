@@ -2679,7 +2679,11 @@ sh_library(
         "t3704-add-pathspec-file",
         "t3705-add-sparse-checkout",
         "t3800-mktag",
-        "t3900-i18n-commit",
+        # Issue with bad lib iconv on MacOS
+        # Fix should be available in the next version of Git
+        #   https://lore.kernel.org/git/20260111195149.716177-1-tboegi@web.de/
+        #   https://lore.kernel.org/git/20260111195151.716191-1-tboegi@web.de/
+        # "t3900-i18n-commit",
         "t3901-i18n-patch",
         "t3902-quoted",
         "t3903-stash",
