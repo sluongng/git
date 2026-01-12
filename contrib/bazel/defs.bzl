@@ -74,24 +74,13 @@ _GIT_OS_DEFINES = select({
     "//conditions:default": [],
 })
 
-_ICONV_DEFINES = select({
-    "@platforms//os:macos": [
-        "-Diconv=libiconv",
-        "-Diconv_open=libiconv_open",
-        "-Diconv_close=libiconv_close",
-    ],
-    "//conditions:default": [],
-})
-
-GIT_COPTS = _GIT_BASE_COPTS + _GIT_CPU_DEFINES + _GIT_OS_DEFINES + _ICONV_DEFINES
+GIT_COPTS = _GIT_BASE_COPTS + _GIT_CPU_DEFINES + _GIT_OS_DEFINES
 
 GIT_LINKOPTS = ["-lpthread"] + select({
     "@platforms//os:macos": [
         "-framework",
         "CoreServices",
         # TODO(sluongng): Use libiconv when it's available of BCR
-        "-L/opt/homebrew/opt/libiconv/lib",
-        "-Wl,-rpath,/opt/homebrew/opt/libiconv/lib",
         "-liconv",
     ],
     "//conditions:default": [],
