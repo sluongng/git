@@ -69,7 +69,7 @@ daemon_parent=$GIT_DAEMON_DOCUMENT_ROOT_PATH/parent
 
 test_expect_success 'create repo to be served by git-daemon' '
 	git init "$daemon_parent" &&
-	echo_without_newline "$hello_content" > $daemon_parent/hello &&
+	echo_without_newline "$hello_content" > "$daemon_parent/hello" &&
 	git -C "$daemon_parent" update-index --add hello &&
 	git -C "$daemon_parent" config transfer.advertiseobjectinfo true &&
 	git clone "$GIT_DAEMON_URL/parent" -n "$daemon_parent/daemon_client_empty"
