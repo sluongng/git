@@ -5,6 +5,9 @@ module: https://bcr.bazel.build/modules/git/2.55.0/source.json.
 The overlay files were verified against the SHA-256 digests in that manifest,
 then adapted to this source tree. The existing Git ignore rules are preserved.
 
+Bazel 7.7.0 or newer is required by `rules_rs`. Rust targets use its
+compilation rules and a pinned Rust 1.92.0 toolchain, retaining edition 2018.
+
 Build and run the regression suites with:
 
 ```sh
