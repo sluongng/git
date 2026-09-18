@@ -2,7 +2,7 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["git_defs.bzl"])
+exports_files(["defs.bzl"])
 
 cc_library(
     name = "angle_include_shims",

@@ -1,6 +1,6 @@
 module(
     name = "git",
-    version = "2.55.0",
+    version = "2.55.0-dev",
     bazel_compatibility = [">=7.2.1"],
 )
 

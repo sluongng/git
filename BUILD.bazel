@@ -254,14 +254,17 @@ copy_file(
 
 genrule(
     name = "git_version_file",
-    srcs = ["GIT-VERSION-FILE.in"],
+    srcs = [
+        "GIT-VERSION-FILE.in",
+        "GIT-VERSION-GEN",
+    ],
     outs = ["GIT-VERSION-FILE"],
     cmd = """
       set -euo pipefail
 
-      GIT_VERSION="2.55.0"
-      GIT_BUILT_FROM_COMMIT="e9019fcafe0040228b8631c30f97ae1adb61bcdc"
-      GIT_DATE="2026-06-29"
+      GIT_VERSION="$$(sed -n 's/^DEF_VER=v//p' $(location GIT-VERSION-GEN))"
+      GIT_BUILT_FROM_COMMIT="unknown"
+      GIT_DATE="unknown"
       GIT_USER_AGENT="git/$${GIT_VERSION}"
 
       export GIT_VERSION GIT_BUILT_FROM_COMMIT GIT_DATE GIT_USER_AGENT
@@ -408,16 +411,19 @@ sh_binary(
     srcs = ["GIT-VERSION-GEN"],
 )
 
-# Generates version-def.h from version-def.h.in using hard-coded version info.
+# Use the source version without depending on checkout-specific .git metadata.
 genrule(
     name = "version_def",
-    srcs = ["version-def.h.in"],
+    srcs = [
+        "version-def.h.in",
+        "GIT-VERSION-GEN",
+    ],
     outs = ["version-def.h"],
     cmd = """
       set -euo pipefail
-      GIT_VERSION="2.55.0"
-      GIT_BUILT_FROM_COMMIT="e9019fcafe0040228b8631c30f97ae1adb61bcdc"
-      GIT_DATE="2026-06-29"
+      GIT_VERSION="$$(sed -n 's/^DEF_VER=v//p' $(location GIT-VERSION-GEN))"
+      GIT_BUILT_FROM_COMMIT="unknown"
+      GIT_DATE="unknown"
       GIT_USER_AGENT="git/$${GIT_VERSION}"
 
       export GIT_VERSION GIT_BUILT_FROM_COMMIT GIT_DATE GIT_USER_AGENT
@@ -481,13 +487,17 @@ cc_library(
 cc_library(
     name = "add_interactive",
     hdrs = ["add-interactive.h"],
-    deps = [":add_patch"],
+    deps = [
+        ":add_patch",
+    ],
 )
 
 cc_library(
     name = "add_patch",
     hdrs = ["add-patch.h"],
-    deps = [":color"],
+    deps = [
+        ":color",
+    ],
 )
 
 cc_library(
@@ -549,6 +559,9 @@ cc_library(
 cc_library(
     name = "dir_iterator",
     hdrs = ["dir-iterator.h"],
+    deps = [
+        ":strbuf",
+    ],
 )
 
 cc_library(
@@ -573,7 +586,10 @@ cc_library(
 cc_library(
     name = "fsck",
     hdrs = ["fsck.h"],
-    deps = [":oidset"],
+    deps = [
+        ":object",
+        ":oidset",
+    ],
 )
 
 cc_library(
@@ -589,7 +605,9 @@ cc_library(
 cc_library(
     name = "fsmonitor_ipc",
     hdrs = ["fsmonitor-ipc.h"],
-    deps = [":simple_ipc"],
+    deps = [
+        ":simple_ipc",
+    ],
 )
 
 cc_library(
@@ -600,7 +618,9 @@ cc_library(
 cc_library(
     name = "fsmonitor_path_utils",
     hdrs = ["fsmonitor-path-utils.h"],
-    deps = [":strbuf"],
+    deps = [
+        ":strbuf",
+    ],
 )
 
 cc_library(
@@ -611,7 +631,9 @@ cc_library(
 cc_library(
     name = "oidset",
     hdrs = ["oidset.h"],
-    deps = [":khash"],
+    deps = [
+        ":khash",
+    ],
 )
 
 cc_library(
@@ -637,12 +659,17 @@ cc_library(
 cc_library(
     name = "loose",
     hdrs = ["loose.h"],
-    deps = [":khash"],
+    deps = [
+        ":khash",
+    ],
 )
 
 cc_library(
     name = "khash",
     hdrs = ["khash.h"],
+    deps = [
+        ":hash",
+    ],
 )
 
 cc_library(
@@ -669,7 +696,10 @@ cc_library(
 cc_library(
     name = "hex",
     hdrs = ["hex.h"],
-    deps = [":hex_ll"],
+    deps = [
+        ":hash",
+        ":hex_ll",
+    ],
 )
 
 cc_library(
@@ -680,6 +710,9 @@ cc_library(
 cc_library(
     name = "ident",
     hdrs = ["ident.h"],
+    deps = [
+        ":string_list",
+    ],
 )
 
 cc_library(
@@ -690,18 +723,25 @@ cc_library(
 cc_library(
     name = "json_writer",
     hdrs = ["json-writer.h"],
+    deps = [
+        ":strbuf",
+    ],
 )
 
 cc_library(
     name = "lockfile",
     hdrs = ["lockfile.h"],
-    deps = [":tempfile"],
+    deps = [
+        ":tempfile",
+    ],
 )
 
 cc_library(
     name = "object",
     hdrs = ["object.h"],
-    deps = [":hash"],
+    deps = [
+        ":hash",
+    ],
 )
 
 cc_library(
@@ -710,13 +750,17 @@ cc_library(
     deps = [
         ":git_zlib",
         ":object",
+        ":odb",
+        "//odb:headers",
     ],
 )
 
 cc_library(
     name = "object_file_convert",
     hdrs = ["object-file-convert.h"],
-    deps = [":object"],
+    deps = [
+        ":object",
+    ],
 )
 
 cc_library(
@@ -738,8 +782,12 @@ cc_library(
     name = "odb",
     hdrs = ["odb.h"],
     deps = [
+        ":hashmap",
+        ":object",
+        ":oid_array",
         ":oidmap",
         ":oidset",
+        ":string_list",
         ":thread_utils",
     ],
 )
@@ -747,12 +795,24 @@ cc_library(
 cc_library(
     name = "oidmap",
     hdrs = ["oidmap.h"],
+    deps = [
+        ":hash",
+        ":hashmap",
+    ],
 )
 
 cc_library(
     name = "packfile",
     hdrs = ["packfile.h"],
-    deps = [":list"],
+    deps = [
+        ":list",
+        ":object",
+        ":odb",
+        ":oidset",
+        ":packfile_list",
+        ":repository",
+        "//odb:headers",
+    ],
 )
 
 cc_library(
@@ -768,6 +828,9 @@ cc_library(
 cc_library(
     name = "pkt_line",
     hdrs = ["pkt-line.h"],
+    deps = [
+        ":strbuf",
+    ],
 )
 
 cc_library(
@@ -794,6 +857,11 @@ cc_library(
 cc_library(
     name = "replace_object",
     hdrs = ["replace-object.h"],
+    deps = [
+        ":odb",
+        ":oidmap",
+        ":repository",
+    ],
 )
 
 cc_library(
@@ -807,8 +875,8 @@ cc_library(
     deps = [
         ":environment",
         ":repo_settings",
-        ":strmap",
         ":string_list",
+        ":strmap",
     ],
 )
 
@@ -824,6 +892,7 @@ cc_library(
         ":ident",
         ":list_objects_filter_options",
         ":notes",
+        ":object_name",
         ":oidset",
         ":pretty",
         ":prio_queue",
@@ -844,17 +913,32 @@ cc_library(
 cc_library(
     name = "list_objects_filter_options",
     hdrs = ["list-objects-filter-options.h"],
+    deps = [
+        ":gettext",
+        ":object",
+        ":strbuf",
+    ],
 )
 
 cc_library(
     name = "diff",
     hdrs = ["diff.h"],
+    deps = [
+        ":color",
+        ":hash",
+        ":pathspec",
+        ":strbuf",
+    ],
 )
 
 cc_library(
     name = "pretty",
     hdrs = ["pretty.h"],
-    deps = [":date"],
+    deps = [
+        ":color",
+        ":date",
+        ":string_list",
+    ],
 )
 
 cc_library(
@@ -866,6 +950,7 @@ cc_library(
     name = "grep",
     hdrs = ["grep.h"],
     deps = [
+        ":color",
         ":thread_utils",
         ":userdiff",
     ],
@@ -874,18 +959,25 @@ cc_library(
 cc_library(
     name = "userdiff",
     hdrs = ["userdiff.h"],
-    deps = [":notes_cache"],
+    deps = [
+        ":notes_cache",
+    ],
 )
 
 cc_library(
     name = "notes_cache",
     hdrs = ["notes-cache.h"],
-    deps = [":notes"],
+    deps = [
+        ":notes",
+    ],
 )
 
 cc_library(
     name = "notes",
     hdrs = ["notes.h"],
+    deps = [
+        ":string_list",
+    ],
 )
 
 cc_library(
@@ -905,6 +997,10 @@ cc_library(
 cc_library(
     name = "setup",
     hdrs = ["setup.h"],
+    deps = [
+        ":refs",
+        ":string_list",
+    ],
 )
 
 cc_library(
@@ -915,7 +1011,9 @@ cc_library(
 cc_library(
     name = "simple_ipc",
     hdrs = ["simple-ipc.h"],
-    deps = [":pkt_line"],
+    deps = [
+        ":pkt_line",
+    ],
 )
 
 cc_library(
@@ -936,17 +1034,25 @@ cc_library(
 cc_library(
     name = "strmap",
     hdrs = ["strmap.h"],
-    deps = [":hashmap"],
+    deps = [
+        ":hashmap",
+    ],
 )
 
 cc_library(
     name = "symlinks",
     hdrs = ["symlinks.h"],
+    deps = [
+        ":strbuf",
+    ],
 )
 
 cc_library(
     name = "tag",
     hdrs = ["tag.h"],
+    deps = [
+        ":object",
+    ],
 )
 
 cc_library(
@@ -971,6 +1077,9 @@ cc_library(
 cc_library(
     name = "trace",
     hdrs = ["trace.h"],
+    deps = [
+        ":strbuf",
+    ],
 )
 
 cc_library(
@@ -986,6 +1095,9 @@ cc_library(
 cc_library(
     name = "unix_stream_server",
     hdrs = ["unix-stream-server.h"],
+    deps = [
+        ":unix_socket",
+    ],
 )
 
 cc_library(
@@ -1006,6 +1118,9 @@ cc_library(
 cc_library(
     name = "worktree",
     hdrs = ["worktree.h"],
+    deps = [
+        ":refs",
+    ],
 )
 
 cc_library(
@@ -1140,6 +1255,7 @@ cc_library(
         "pack-revindex.c",
         "pack-write.c",
         "packfile.c",
+        "packfile-list.c",
         "pager.c",
         "parallel-checkout.c",
         "parse.c",
@@ -1267,6 +1383,7 @@ cc_library(
     name = "libgit_transport",
     srcs = [
         "connect.c",
+        "fetch-object-info.c",
         "fetch-pack.c",
         "ls-refs.c",
         "protocol.c",
@@ -1543,4 +1660,106 @@ perl_binary(
 alias(
     name = "git_send_email",
     actual = ":git-send-email",
+)
+
+cc_library(
+    name = "oid_array",
+    hdrs = ["oid-array.h"],
+    deps = [
+        ":hash",
+    ],
+)
+
+cc_library(
+    name = "packfile_list",
+    hdrs = ["packfile-list.h"],
+)
+
+cc_library(
+    name = "mergesort",
+    hdrs = ["mergesort.h"],
+)
+
+cc_library(
+    name = "midx",
+    hdrs = ["midx.h"],
+    deps = [
+        ":string_list",
+    ],
+)
+
+cc_library(
+    name = "pack_bitmap",
+    hdrs = ["pack-bitmap.h"],
+    deps = [
+        ":khash",
+        ":pack",
+        ":pack_objects",
+        ":refs",
+        ":string_list",
+        "//ewah",
+    ],
+)
+
+cc_library(
+    name = "pack",
+    hdrs = ["pack.h"],
+    deps = [
+        ":csum_file",
+        ":object",
+    ],
+)
+
+cc_library(
+    name = "csum_file",
+    hdrs = ["csum-file.h"],
+    deps = [
+        ":hash",
+        ":write_or_die",
+    ],
+)
+
+cc_library(
+    name = "pack_objects",
+    hdrs = ["pack-objects.h"],
+    deps = [
+        ":odb",
+        ":pack",
+        ":packfile",
+        ":thread_utils",
+    ],
+)
+
+cc_library(
+    name = "blob",
+    hdrs = ["blob.h"],
+    deps = [
+        ":object",
+    ],
+)
+
+cc_library(
+    name = "promisor_remote",
+    hdrs = ["promisor-remote.h"],
+    deps = [
+        ":repository",
+    ],
+)
+
+cc_library(
+    name = "repack",
+    hdrs = ["repack.h"],
+    deps = [
+        ":list_objects_filter_options",
+        ":oidset",
+        ":string_list",
+    ],
+)
+
+cc_library(
+    name = "tree",
+    hdrs = ["tree.h"],
+    deps = [
+        ":object",
+    ],
 )

@@ -88,6 +88,7 @@ cc_library(
         "win32/pthread.c",
         "win32/syslog.c",
         "winansi.c",
+        "writev.c",
     ],
     copts = GIT_COPTS,
     target_compatible_with = ["@platforms//os:windows"],

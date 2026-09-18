@@ -77,6 +77,7 @@ _GIT_OS_DEFINES = select({
         "-DHAVE_FSMONITOR_OS_SETTINGS",
     ] + _GIT_MACOS_ICONV_COPTS,
     "@platforms//os:windows": [
+        "-DNO_WRITEV",
         # fsmonitor
         "-DHAVE_FSMONITOR_DAEMON_BACKEND",
         "-DHAVE_FSMONITOR_OS_SETTINGS",
