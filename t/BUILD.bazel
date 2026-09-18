@@ -2430,3 +2430,63 @@ sh_library(
         if len(script) > 6 and script[1:5].isdigit() and script[5] == "-"
     ]
 ]
+
+# Parser regression fixtures, matching t/Makefile's check-* recipes.
+[
+    sh_test(
+        name = "check-" + lint,
+        srcs = ["bazel-lint-test-wrapper.sh"],
+        args = [
+            lint,
+            "$(location {}.pl)".format(lint),
+        ],
+        data = glob([
+            lint + "/*.test",
+            lint + "/*.expect",
+        ]) + [
+            lint + ".pl",
+            lint + "-cat.pl",
+            "lib-shell-parser.pl",
+            "@bazel_tools//tools/bash/runfiles",
+            "@rules_perl//:current_toolchain",
+        ],
+        env = {"PERL": "$(PERL)"},
+        toolchains = ["@rules_perl//:current_toolchain"],
+    )
+    for lint in [
+        "chainlint",
+        "greplint",
+    ]
+]
+
+# Match T + THELPERS + TPERF in t/Makefile, excluding Bazel-only wrappers.
+filegroup(
+    name = "greplint_sources",
+    srcs = glob(
+        ["*.sh"],
+        exclude = ["bazel-*.sh"],
+    ) + [
+        script
+        for script in glob(["perf/p*-*.sh"])
+        if len(script) > 11 and script[6:10].isdigit() and script[10] == "-"
+    ],
+)
+
+sh_test(
+    name = "test-greplint",
+    srcs = ["bazel-lint-test-wrapper.sh"],
+    args = [
+        "test-greplint",
+        "$(location greplint.pl)",
+        "$(locations :greplint_sources)",
+    ],
+    data = [
+        "greplint.pl",
+        "lib-shell-parser.pl",
+        ":greplint_sources",
+        "@bazel_tools//tools/bash/runfiles",
+        "@rules_perl//:current_toolchain",
+    ],
+    env = {"PERL": "$(PERL)"},
+    toolchains = ["@rules_perl//:current_toolchain"],
+)
