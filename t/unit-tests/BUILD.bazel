@@ -3,35 +3,8 @@ load("//contrib/bazel:defs.bzl", "GIT_COPTS", "GIT_LINKOPTS")
 
 package(default_visibility = ["//visibility:public"])
 
-CLAR_TEST_SUITES = [
-    "u-ctype.c",
-    "u-dir.c",
-    "u-example-decorate.c",
-    "u-hash.c",
-    "u-hashmap.c",
-    "u-list-objects-filter-options.c",
-    "u-mem-pool.c",
-    "u-oid-array.c",
-    "u-oidmap.c",
-    "u-oidtree.c",
-    "u-prio-queue.c",
-    "u-reftable-basics.c",
-    "u-reftable-block.c",
-    "u-reftable-merged.c",
-    "u-reftable-pq.c",
-    "u-reftable-readwrite.c",
-    "u-reftable-record.c",
-    "u-reftable-stack.c",
-    "u-reftable-table.c",
-    "u-reftable-tree.c",
-    "u-strbuf.c",
-    "u-strcmp-offset.c",
-    "u-string-list.c",
-    "u-strvec.c",
-    "u-trailer.c",
-    "u-urlmatch-normalization.c",
-    "u-utf8-width.c",
-]
+# Include new suites when updating Git, including suites beyond the Makefile list.
+CLAR_TEST_SUITES = glob(["u-*.c"])
 
 genrule(
     name = "clar_decls",
