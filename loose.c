@@ -46,6 +46,14 @@ static int insert_oid_pair(kh_oid_map_t *map, const struct object_id *key, const
 	return 1;
 }
 
+static void ensure_loose_map_cache(struct odb_source_loose *loose)
+{
+	if (!loose->cache) {
+		ALLOC_ARRAY(loose->cache, 1);
+		oidtree_init(loose->cache);
+	}
+}
+
 static int insert_loose_map(struct odb_source_loose *loose,
 			    const struct object_id *oid,
 			    const struct object_id *compat_oid)
@@ -55,8 +63,10 @@ static int insert_loose_map(struct odb_source_loose *loose,
 
 	inserted |= insert_oid_pair(map->to_compat, oid, compat_oid);
 	inserted |= insert_oid_pair(map->to_storage, compat_oid, oid);
-	if (inserted)
+	if (inserted) {
+		ensure_loose_map_cache(loose);
 		oidtree_insert(loose->cache, compat_oid, NULL);
+	}
 
 	return inserted;
 }
@@ -74,10 +84,7 @@ int loose_object_map_load(struct odb_source_loose *loose)
 
 	if (!loose->map)
 		loose_object_map_init(&loose->map);
-	if (!loose->cache) {
-		ALLOC_ARRAY(loose->cache, 1);
-		oidtree_init(loose->cache);
-	}
+	ensure_loose_map_cache(loose);
 
 	insert_loose_map(loose, repo->hash_algo->empty_tree, repo->compat_hash_algo->empty_tree);
 	insert_loose_map(loose, repo->hash_algo->empty_blob, repo->compat_hash_algo->empty_blob);
@@ -86,8 +93,9 @@ int loose_object_map_load(struct odb_source_loose *loose)
 	path = xstrfmt("%s/loose-object-idx", loose->base.path);
 	fp = fopen(path, "rb");
 	if (!fp) {
+		ret = errno == ENOENT ? 0 : -1;
 		free(path);
-		return 0;
+		return ret;
 	}
 
 	if (strbuf_getwholeline(&buf, fp, '\n') || strcmp(buf.buf, loose_object_header))
@@ -128,7 +136,7 @@ static int write_one_object(struct odb_source_loose *loose,
 			    const struct object_id *compat_oid)
 {
 	struct lock_file lock;
-	int fd;
+	int fd, close_result;
 	struct stat st;
 	struct strbuf buf = STRBUF_INIT, path = STRBUF_INIT;
 
@@ -141,13 +149,21 @@ static int write_one_object(struct odb_source_loose *loose,
 		goto errout;
 	if (fstat(fd, &st) < 0)
 		goto errout;
-	if (!st.st_size && write_in_full(fd, loose_object_header, strlen(loose_object_header)) < 0)
-		goto errout;
-
+	if (!st.st_size)
+		strbuf_addstr(&buf, loose_object_header);
 	strbuf_addf(&buf, "%s %s\n", oid_to_hex(oid), oid_to_hex(compat_oid));
-	if (write_in_full(fd, buf.buf, buf.len) < 0)
+	if (write_in_full(fd, buf.buf, buf.len) < 0) {
+		int saved_errno = errno;
+
+		/* A partial mapping would prevent readers from loading later entries. */
+		if (ftruncate(fd, st.st_size))
+			warning_errno(_("unable to roll back loose object index %s"), path.buf);
+		errno = saved_errno;
 		goto errout;
-	if (close(fd))
+	}
+	close_result = close(fd);
+	fd = -1;
+	if (close_result)
 		goto errout;
 	adjust_shared_perm(loose->base.odb->repo, path.buf);
 	rollback_lock_file(&lock);
@@ -168,14 +184,17 @@ int repo_add_loose_object_map(struct odb_source_loose *loose,
 			      const struct object_id *oid,
 			      const struct object_id *compat_oid)
 {
-	int inserted = 0;
+	struct loose_object_map *map = loose->map;
 
 	if (!should_use_loose_object_map(loose->base.odb->repo))
 		return 0;
 
-	inserted = insert_loose_map(loose, oid, compat_oid);
-	if (inserted)
-		return write_one_object(loose, oid, compat_oid);
+	if (kh_get_oid_map(map->to_compat, *oid) < kh_end(map->to_compat) &&
+	    kh_get_oid_map(map->to_storage, *compat_oid) < kh_end(map->to_storage))
+		return 0;
+	if (write_one_object(loose, oid, compat_oid))
+		return -1;
+	insert_loose_map(loose, oid, compat_oid);
 	return 0;
 }
 
