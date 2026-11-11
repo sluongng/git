@@ -431,6 +431,7 @@ libgit_sources = [
   'object-name.c',
   'object.c',
   'odb.c',
+  'odb/chunked.c',
   'odb/fastcdc.c',
   'odb/source.c',
   'odb/source-files.c',

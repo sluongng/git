@@ -1224,6 +1224,7 @@ LIB_OBJS += object-file.o
 LIB_OBJS += object-name.o
 LIB_OBJS += object.o
 LIB_OBJS += odb.o
+LIB_OBJS += odb/chunked.o
 LIB_OBJS += odb/fastcdc.o
 LIB_OBJS += odb/source.o
 LIB_OBJS += odb/source-files.o

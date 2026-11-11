@@ -7,6 +7,7 @@
 #include "object-file.h"
 #include "object-file-convert.h"
 #include "odb.h"
+#include "odb/chunked.h"
 #include "odb/source-files.h"
 #include "odb/source-loose.h"
 #include "odb/streaming.h"
@@ -62,6 +63,30 @@ static int quick_has_loose(struct odb_source_loose *loose,
 			   const struct object_id *oid)
 {
 	return !!oidtree_contains(odb_source_loose_cache(loose, oid), oid);
+}
+
+static int read_chunked_object_info(struct odb_source_loose *loose,
+				    const void *manifest, size_t manifest_len,
+				    struct object_info *oi)
+{
+	struct odb_stream *stream;
+	int ret = 0;
+
+	if (odb_chunked_open(&stream, loose->base.path, manifest, manifest_len) < 0)
+		return -1;
+
+	if (oi->contentp) {
+		*oi->contentp = odb_chunked_read_contents(stream);
+		if (!*oi->contentp)
+			ret = -1;
+	}
+
+	if (oi->sizep)
+		*oi->sizep = stream->size;
+	if (oi->typep)
+		*oi->typep = stream->type;
+	odb_stream_close(stream);
+	return ret;
 }
 
 static int read_object_info_from_path(struct odb_source_loose *loose,
@@ -153,6 +178,11 @@ static int read_object_info_from_path(struct odb_source_loose *loose,
 		*oi->disk_sizep = mapsize;
 	if (oi->mtimep)
 		*oi->mtimep = st.st_mtime;
+
+	if (odb_chunked_is_manifest(map, mapsize)) {
+		ret = read_chunked_object_info(loose, map, mapsize, oi);
+		goto out;
+	}
 
 	stream_to_end = &stream;
 
@@ -362,6 +392,13 @@ static int odb_source_loose_read_object_stream(struct odb_stream **out,
 	mapped = odb_source_loose_map_object(loose, oid, &mapsize);
 	if (!mapped)
 		return -1;
+
+	if (odb_chunked_is_manifest(mapped, mapsize)) {
+		int ret = odb_chunked_open(out, source->path, mapped, mapsize);
+
+		munmap(mapped, mapsize);
+		return ret;
+	}
 
 	/*
 	 * Note: we must allocate this structure early even though we may still
@@ -1038,7 +1075,8 @@ static int fsck_loose(const struct object_id *oid, const char *path,
 	oi.typep = &type;
 
 	if (read_loose_object(data->source->base.odb->repo,
-			      path, oid, &real_oid, &contents, &oi) < 0) {
+			      data->source->base.path, path, oid,
+			      &real_oid, &contents, &oi) < 0) {
 		if (contents && !oideq(&real_oid, oid))
 			err = error(_("%s: hash-path mismatch, found at: %s"),
 				    oid_to_hex(&real_oid), path);

@@ -5,6 +5,8 @@ test_description='git cat-file'
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-loose.sh
 . "$TEST_DIRECTORY"/lib-cat-file.sh
+. "$TEST_DIRECTORY"/lib-filev2.sh
+. "$TEST_DIRECTORY"/lib-pack.sh
 
 test_cmdmode_usage () {
 	test_expect_code 129 "$@" 2>err &&
@@ -1511,6 +1513,72 @@ test_expect_success PIPE 'concurrently written alternates are loaded' '
 		echo "$oid blob 0" >expect &&
 		test_cmp expect actual
 	)
+'
+
+test_expect_success 'read a hand-built chunked blob manifest' '
+	git init --object-storage-format=files chunked-reader &&
+	test_filev2_blob >chunked-reader/blob &&
+	reader_oid=$(git -C chunked-reader hash-object blob) &&
+	reader_objects=chunked-reader/.git/objects &&
+	reader_manifest=$reader_objects/$(test_oid_to_path "$reader_oid") &&
+	reader_size=$(test_file_size chunked-reader/blob) &&
+
+	# Assemble chunks and manifest without using the filev2 writer.
+	split -b 4194304 chunked-reader/blob chunked-reader/part- &&
+	{
+		printf "\\0FILEV2\\1\\0\\0\\0\\0" &&
+		uint32_binary "$reader_size" &&
+		for part in chunked-reader/part-*
+		do
+			size=$(test_file_size "$part") &&
+			digest=$(test-tool sha256 <"$part") &&
+			chunk=$reader_objects/chunks/$(test_oid_to_path "$digest") &&
+			mkdir -p "${chunk%/*}" &&
+			test-tool zlib deflate <"$part" >"$chunk" &&
+			uint32_binary "$size" &&
+			test-tool sha256 -b <"$part" || return 1
+		done
+	} >manifest-body &&
+	mkdir -p "${reader_manifest%/*}" &&
+	cat manifest-body >"$reader_manifest" &&
+	test-tool sha256 -b <manifest-body >>"$reader_manifest" &&
+	reader_last_chunk=$chunk &&
+
+	echo "$reader_oid blob $reader_size" >expect &&
+	echo "$reader_oid" | git -C chunked-reader cat-file --batch-check >actual &&
+	test_cmp expect actual &&
+	git -C chunked-reader cat-file -p "$reader_oid" >actual &&
+	test_cmp_bin chunked-reader/blob actual &&
+	git -C chunked-reader fsck --no-dangling &&
+	git -C chunked-reader -c core.bigFileThreshold=1m fsck --no-dangling
+'
+
+test_expect_success 'reject a chunked blob manifest with reordered entries' '
+	mv "$reader_manifest" saved-manifest &&
+	test_when_finished "mv -f saved-manifest \"$reader_manifest\"" &&
+	{
+		# Swap the first two 36-byte entries after the 16-byte header.
+		dd if=saved-manifest bs=1 count=16 2>/dev/null &&
+		dd if=saved-manifest bs=1 skip=52 count=36 2>/dev/null &&
+		dd if=saved-manifest bs=1 skip=16 count=36 2>/dev/null &&
+		dd if=saved-manifest bs=1 skip=88 2>/dev/null
+	} >"$reader_manifest" &&
+	test_must_fail git -C chunked-reader cat-file -p "$reader_oid" >out 2>err &&
+	test_grep "invalid blob manifest checksum" err
+'
+
+test_expect_success 'fail streamed reads and fsck when a chunk is missing' '
+	mv "$reader_last_chunk" saved-chunk &&
+	test_when_finished "mv -f saved-chunk \"$reader_last_chunk\"" &&
+	test_must_fail git -C chunked-reader cat-file -p "$reader_oid" >out 2>err &&
+	test_grep "unable to open blob chunk" err &&
+	test_must_fail git -C chunked-reader fsck --no-dangling >out 2>err &&
+	test_grep "unable to open blob chunk" err &&
+	test_grep "$reader_oid" err &&
+	test_must_fail git -C chunked-reader -c core.bigFileThreshold=1m \
+		fsck --no-dangling >out 2>err &&
+	test_grep "unable to open blob chunk" err &&
+	test_grep "$reader_oid" err
 '
 
 test_done

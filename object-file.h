@@ -131,6 +131,7 @@ int check_and_freshen_file(const char *fn, int freshen,
  * Returns 0 on success, negative on error (details may be written to stderr).
  */
 int read_loose_object(struct repository *repo,
+		      const char *object_dir,
 		      const char *path,
 		      const struct object_id *expected_oid,
 		      struct object_id *real_oid,

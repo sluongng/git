@@ -21,6 +21,7 @@
 #include "object-file-convert.h"
 #include "object-file.h"
 #include "odb.h"
+#include "odb/chunked.h"
 #include "odb/streaming.h"
 #include "odb/transaction.h"
 #include "pack.h"
@@ -141,8 +142,10 @@ int stream_object_signature(struct repository *r,
 	for (;;) {
 		char buf[1024 * 16];
 		ssize_t readlen = odb_stream_read(st, buf, sizeof(buf));
-		if (readlen < 0)
+		if (readlen < 0) {
+			git_hash_discard(&c);
 			return -1;
+		}
 		if (!readlen)
 			break;
 		git_hash_update(&c, buf, readlen);
@@ -1188,6 +1191,7 @@ static int check_stream_oid(git_zstream *stream,
 }
 
 int read_loose_object(struct repository *repo,
+		      const char *object_dir,
 		      const char *path,
 		      const struct object_id *expected_oid,
 		      struct object_id *real_oid,
@@ -1207,6 +1211,27 @@ int read_loose_object(struct repository *repo,
 		map = map_fd(fd, path, &mapsize);
 	if (!map) {
 		error_errno(_("unable to mmap %s"), path);
+		goto out;
+	}
+
+	if (odb_chunked_is_manifest(map, mapsize)) {
+		struct odb_stream *chunked;
+
+		if (odb_chunked_open(&chunked, object_dir, map, mapsize) < 0)
+			goto out;
+		*oi->typep = chunked->type;
+		*size = chunked->size;
+		if (*size > repo_settings_get_big_file_threshold(repo)) {
+			ret = stream_object_signature(repo, chunked, expected_oid);
+		} else {
+			*contents = odb_chunked_read_contents(chunked);
+			if (*contents) {
+				hash_object_file(repo->hash_algo, *contents,
+						 *size, OBJ_BLOB, real_oid);
+				ret = oideq(expected_oid, real_oid) ? 0 : -1;
+			}
+		}
+		odb_stream_close(chunked);
 		goto out;
 	}
 
