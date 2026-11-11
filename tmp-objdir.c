@@ -23,6 +23,7 @@ struct tmp_objdir {
 	struct odb_files_dir *temp_dir;
 	struct odb_files_dir *orig_dir;
 	int will_destroy;
+	bool disable_ref_updates;
 };
 
 /*
@@ -70,7 +71,7 @@ static void tmp_objdir_restore_source(struct tmp_objdir *t)
 	if (t->temp_dir->next != t->orig_dir)
 		BUG("we expect the old primary object store to be the first alternate");
 
-	t->repo->disable_ref_updates = false;
+	t->repo->disable_ref_updates = t->disable_ref_updates;
 	files->dirs = t->orig_dir;
 	odb_files_dir_free(cur_dir);
 }
@@ -169,6 +170,7 @@ struct tmp_objdir *tmp_objdir_create(struct repository *r,
 	t = xcalloc(1, sizeof(*t));
 	t->repo = r;
 	t->will_destroy = will_destroy;
+	t->disable_ref_updates = r->disable_ref_updates;
 	strbuf_init(&t->path, 0);
 	strvec_init(&t->env);
 
@@ -253,17 +255,25 @@ static int read_dir_paths(struct string_list *out, const char *path)
 {
 	DIR *dh;
 	struct dirent *de;
+	int ret;
 
 	dh = opendir(path);
 	if (!dh)
 		return -1;
 
-	while ((de = readdir(dh)))
+	for (;;) {
+		errno = 0;
+		de = readdir(dh);
+		if (!de)
+			break;
 		if (de->d_name[0] != '.')
 			string_list_append(out, de->d_name);
+	}
 
-	closedir(dh);
-	return 0;
+	ret = errno ? -1 : 0;
+	if (closedir(dh) < 0)
+		ret = -1;
+	return ret;
 }
 
 static int migrate_paths(struct tmp_objdir *t,
@@ -302,8 +312,10 @@ static int migrate_paths(struct tmp_objdir *t,
 	struct string_list paths = STRING_LIST_INIT_DUP;
 	int ret = 0;
 
-	if (read_dir_paths(&paths, src->buf) < 0)
-		return -1;
+	if (read_dir_paths(&paths, src->buf) < 0) {
+		ret = -1;
+		goto out;
+	}
 	paths.cmp = pack_copy_cmp;
 	string_list_sort(&paths);
 
@@ -323,6 +335,7 @@ static int migrate_paths(struct tmp_objdir *t,
 		strbuf_setlen(dst, dst_len);
 	}
 
+out:
 	string_list_clear(&paths, 0);
 	return ret;
 }
