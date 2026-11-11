@@ -364,6 +364,22 @@ test_expect_success 'gc.recentObjectsHook' '
 	git cat-file -p $BLOB
 '
 
+test_expect_success 'filev2 prune expires temporary chunk files' '
+	git init --object-storage-format=filev2 filev2-prune &&
+	test-tool genrandom prune-chunk 5m >filev2-prune/large &&
+	git -C filev2-prune add large &&
+	find filev2-prune/.git/objects/chunks -type f >chunk-paths &&
+	chunk=$(sed -n "1p" chunk-paths) &&
+	shard=${chunk%/*} &&
+	touch "$shard/tmp_obj_stale" "$shard/tmp_obj_recent" &&
+	test-tool chmtime =-86500 "$shard/tmp_obj_stale" &&
+	git -C filev2-prune prune --expire=1.hour.ago &&
+	test_path_is_missing "$shard/tmp_obj_stale" &&
+	test_path_is_file "$shard/tmp_obj_recent" &&
+	git -C filev2-prune cat-file blob :large >actual &&
+	test_cmp_bin filev2-prune/large actual
+'
+
 test_expect_success 'prune does not crash with -h' '
 	git prune -h >usage &&
 	test_grep "[Uu]sage: git prune " usage

@@ -9,6 +9,7 @@
 #include "dir.h"
 #include "environment.h"
 #include "gettext.h"
+#include "odb/chunked.h"
 #include "path.h"
 #include "parse-options.h"
 #include "quote.h"
@@ -81,6 +82,18 @@ static int count_cruft(const char *basename UNUSED, const char *path,
 	return 0;
 }
 
+static int count_chunk(const struct object_id *oid UNUSED, const char *path,
+		       void *data UNUSED)
+{
+	struct stat st;
+
+	if (lstat(path, &st) || !S_ISREG(st.st_mode))
+		loose_garbage(path);
+	else
+		loose_size += on_disk_bytes(st);
+	return 0;
+}
+
 static int print_alternate(struct odb_files_dir *alternate, void *data UNUSED)
 {
 	printf("alternate: ");
@@ -120,6 +133,8 @@ int cmd_count_objects(int argc,
 
 	for_each_loose_file_in_source(the_repository->objects->source,
 				      count_loose, count_cruft, NULL, NULL);
+
+	odb_chunked_for_each_file(the_repository->objects->source, count_chunk, count_cruft);
 
 	if (verbose) {
 		struct packed_git *p;

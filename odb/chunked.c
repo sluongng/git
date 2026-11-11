@@ -191,6 +191,28 @@ out:
 	return ret;
 }
 
+int odb_chunked_for_each_file(struct odb_source *source,
+			      each_loose_object_fn chunk_cb,
+			      each_loose_cruft_fn cruft_cb)
+{
+	struct strbuf path = STRBUF_INIT;
+	const struct git_hash_algo *sha256 = &hash_algos[GIT_HASH_SHA256];
+	int ret = 0;
+
+	if (source->odb->repo->object_storage_format != OBJECT_STORAGE_FORMAT_FILEV2)
+		return 0;
+
+	strbuf_addf(&path, "%s/%s", source->path, ODB_CHUNK_DIRECTORY);
+	for (int i = 0; i < 256; i++) {
+		ret = for_each_file_in_obj_subdir(i, &path, sha256, chunk_cb,
+						 cruft_cb, NULL, NULL);
+		if (ret)
+			break;
+	}
+	strbuf_release(&path);
+	return ret;
+}
+
 static ssize_t read_chunked_stream(struct odb_stream *base, char *buf, size_t len)
 {
 	struct chunked_read_stream *stream = container_of(base,

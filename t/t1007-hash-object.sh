@@ -325,7 +325,10 @@ test_expect_success 'filev2 streams large blobs under their canonical object ID'
 	manifest=filev2/.git/objects/$(test_oid_to_path "$original_oid") &&
 	test-tool hexdump <"$manifest" >manifest.hex &&
 	find filev2/.git/objects/chunks -type f >original.chunks &&
-	test_line_count = 9 original.chunks
+	test_line_count = 9 original.chunks &&
+	git -C filev2 count-objects -v >counts &&
+	original_size=$(sed -n "s/^size: //p" counts) &&
+	test "$original_size" -gt 10240
 '
 
 test_expect_success 'filev2 reuses chunks across two versions of a blob' '
@@ -351,6 +354,10 @@ test_expect_success 'filev2 reuses chunks across two versions of a blob' '
 	find filev2/.git/objects/chunks -type f >combined.chunks &&
 	test_line_count -gt 9 combined.chunks &&
 	test_line_count -lt "$((9 + modified_chunks))" combined.chunks &&
+	git -C filev2 count-objects -v >counts &&
+	combined_size=$(sed -n "s/^size: //p" counts) &&
+	test "$combined_size" -gt "$original_size" &&
+	test "$((combined_size - original_size))" -lt 4096 &&
 	git -C filev2 fsck --no-dangling
 '
 

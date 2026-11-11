@@ -17,6 +17,7 @@
 #include "object-file.h"
 #include "object-name.h"
 #include "odb.h"
+#include "odb/chunked.h"
 #include "shallow.h"
 
 static const char * const prune_usage[] = {
@@ -200,6 +201,7 @@ int cmd_prune(int argc,
 
 	for_each_loose_file_in_source(repo->objects->source,
 				      prune_object, prune_cruft, prune_subdir, &revs);
+	odb_chunked_for_each_file(repo->objects->source, NULL, prune_cruft);
 
 	prune_packed_objects(repo, show_only ? PRUNE_PACKED_DRY_RUN : 0);
 	remove_temporary_files(repo_get_object_directory(repo));

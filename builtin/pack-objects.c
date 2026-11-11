@@ -4654,7 +4654,7 @@ static int force_object_loose(struct odb_source *source,
 		compat_oid_p = &compat_oid;
 	}
 
-	ret = odb_source_write_object(&files->dirs->loose->base, buf, len, type, oid,
+	ret = odb_source_write_object(source, buf, len, type, oid,
 				      compat_oid_p, mtime, 0);
 
 out:

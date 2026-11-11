@@ -199,6 +199,25 @@ test_expect_success 'local packed unreachable obs that exist in alternate ODB ar
 	test_must_fail git show $coid
 '
 
+test_expect_success 'filev2 chunks a large blob loosened by repack' '
+	git init --object-storage-format=filev2 loosen-filev2 &&
+	test-tool genrandom filev2-loosen 5m >loosen-filev2/large &&
+	loosen_oid=$(GIT_OBJECT_STORAGE_FORMAT=files git -C loosen-filev2 hash-object -w large) &&
+	echo "$loosen_oid" >loosen-objects &&
+	git -C loosen-filev2 pack-objects .git/objects/pack/pack <loosen-objects &&
+	git -C loosen-filev2 prune-packed &&
+	git -C loosen-filev2 -c core.bigFileThreshold=1m hash-object -w large >loosen-actual &&
+	test_cmp loosen-objects loosen-actual &&
+	test_path_is_missing "loosen-filev2/.git/objects/$(test_oid_to_path "$loosen_oid")" &&
+	find loosen-filev2/.git/objects -type f -path "*/chunks/*" >loosen-chunks &&
+	test_must_be_empty loosen-chunks &&
+	git -C loosen-filev2 repack -A -d &&
+	find loosen-filev2/.git/objects/chunks -type f >loosen-chunks &&
+	test_file_not_empty loosen-chunks &&
+	git -C loosen-filev2 cat-file blob "$loosen_oid" >loosen-actual &&
+	test_cmp_bin loosen-filev2/large loosen-actual
+'
+
 test_expect_success 'objects made unreachable by grafts only are kept' '
 	test_tick &&
 	git commit --allow-empty -m "commit 4" &&
