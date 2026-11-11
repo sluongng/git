@@ -55,7 +55,7 @@ void fprintf_or_die(FILE *f, const char *fmt, ...)
 	}
 }
 
-static int maybe_fsync(int fd)
+int fsync_file(int fd)
 {
 	if (use_fsync < 0)
 		use_fsync = git_env_bool("GIT_TEST_FSYNC", 1);
@@ -71,14 +71,14 @@ static int maybe_fsync(int fd)
 
 void fsync_or_die(int fd, const char *msg)
 {
-	if (maybe_fsync(fd) < 0)
+	if (fsync_file(fd) < 0)
 		die_errno("fsync error on '%s'", msg);
 }
 
 int fsync_component(enum fsync_component component, int fd)
 {
 	if (fsync_components & component)
-		return maybe_fsync(fd);
+		return fsync_file(fd);
 	return 0;
 }
 

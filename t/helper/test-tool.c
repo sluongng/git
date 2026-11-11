@@ -94,6 +94,7 @@ static struct test_cmd cmds[] = {
 	{ "windows-named-pipe", cmd__windows_named_pipe },
 #endif
 	{ "write-cache", cmd__write_cache },
+	{ "write-chunked-blob", cmd__write_chunked_blob },
 	{ "zlib", cmd__zlib },
 };
 

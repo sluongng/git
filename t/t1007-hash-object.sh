@@ -3,6 +3,7 @@
 test_description="git hash-object"
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-filev2.sh
 
 echo_without_newline() {
 	printf '%s' "$*"
@@ -259,6 +260,39 @@ test_expect_success '--stdin outside of repository (uses default hash)' '
 	nongit git hash-object --stdin <hello >actual &&
 	echo "$(test_oid --hash=builtin hello)" >expect &&
 	test_cmp expect actual
+'
+
+test_expect_success 'write chunks using the FastCDC 2020 profile' '
+	git init chunked-writer &&
+	test_filev2_blob >chunked-writer/blob &&
+	writer_oid=$(git -C chunked-writer hash-object blob) &&
+	test-tool -C chunked-writer write-chunked-blob "$writer_oid" <chunked-writer/blob &&
+	writer_objects=chunked-writer/.git/objects &&
+	writer_manifest=$writer_objects/$(test_oid_to_path "$writer_oid") &&
+
+	# Compare the recorded boundaries to the reference FastCDC output.
+	test-tool hexdump <"$writer_manifest" >writer-manifest.hex &&
+	awk "{ for (i = 17; i <= NF - 32; i += 36) print \$i \$(i+1) \$(i+2) \$(i+3) }" \
+		<writer-manifest.hex >actual &&
+	for size in 1144213 1634300 1227888 1142474 1245688 819030 1193051 1791442 287675
+	do
+		printf "%08x\n" "$size" || return 1
+	done >expect &&
+	test_cmp expect actual &&
+	find "$writer_objects/chunks" -type f >writer-chunks &&
+	test_line_count = 9 writer-chunks &&
+	git -C chunked-writer cat-file blob "$writer_oid" >actual &&
+	test_cmp_bin chunked-writer/blob actual
+'
+
+test_expect_success 'do not publish a manifest when the expected blob ID differs' '
+	git init chunked-mismatch &&
+	expected_oid=$(git -C chunked-mismatch hash-object --stdin </dev/null) &&
+	test_must_fail test-tool -C chunked-mismatch write-chunked-blob "$expected_oid" \
+		<chunked-writer/blob 2>err &&
+	test_grep "object data changed while chunking" err &&
+	test_path_is_missing "chunked-mismatch/.git/objects/$(test_oid_to_path "$expected_oid")" &&
+	test_path_is_missing "chunked-mismatch/.git/objects/$(test_oid_to_path "$writer_oid")"
 '
 
 test_expect_success EXPENSIVE,SIZE_T_IS_64BIT \

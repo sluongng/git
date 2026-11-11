@@ -1,12 +1,19 @@
 #include "git-compat-util.h"
+#include "config.h"
 #include "gettext.h"
 #include "git-zlib.h"
 #include "hex.h"
+#include "loose.h"
 #include "object-file.h"
 #include "odb/chunked.h"
 #include "odb/fastcdc.h"
+#include "odb/source-loose.h"
 #include "odb/streaming.h"
+#include "path.h"
 #include "strbuf.h"
+#include "strvec.h"
+#include "tempfile.h"
+#include "write-or-die.h"
 
 /*
  * The first byte distinguishes the manifest from a zlib-compressed loose
@@ -110,6 +117,35 @@ corrupt:
 out:
 	close(fd);
 	free(compressed);
+	return ret;
+}
+
+static bool chunk_fsync_enabled(void)
+{
+	return fsync_object_files > 0 || (fsync_components & FSYNC_COMPONENT_LOOSE_OBJECT);
+}
+
+static bool chunk_write_is_staged(struct odb_source_loose *loose)
+{
+	struct object_database *odb = loose->base.odb;
+
+	return odb->transaction &&
+		strcmp(loose->base.path, repo_get_object_directory(odb->repo));
+}
+
+static int harden_existing_chunk(const char *path)
+{
+	int fd, ret;
+
+	if (!chunk_fsync_enabled())
+		return 0;
+
+	fd = git_open(path);
+	if (fd < 0)
+		return -1;
+	ret = fsync_file(fd);
+	if (close(fd) < 0)
+		ret = -1;
 	return ret;
 }
 
@@ -229,4 +265,241 @@ void *odb_chunked_read_contents(struct odb_stream *stream)
 		offset += len;
 	}
 	return content;
+}
+
+static int write_chunk_file(struct odb_source_loose *loose,
+			    struct strbuf *path, const void *data, size_t len,
+			    const time_t *mtime, enum odb_write_object_flags flags,
+			    enum finalize_object_file_flags finalize_flags)
+{
+	struct repository *repo = loose->base.odb->repo;
+	struct tempfile *tmp = NULL;
+	struct strbuf template = STRBUF_INIT;
+	int fd, ret = -1;
+
+	if (safe_create_leading_directories(repo, path->buf) != SCLD_OK)
+		goto out;
+	strbuf_add(&template, path->buf, strrchr(path->buf, '/') - path->buf + 1);
+	strbuf_addstr(&template, "tmp_obj_XXXXXX");
+	tmp = mks_tempfile_m(template.buf, 0444);
+	if (!tmp)
+		goto out;
+	fd = get_tempfile_fd(tmp);
+	if (write_in_full(fd, data, len) < 0)
+		goto out;
+
+	if (!loose->will_destroy) {
+		if (batch_fsync_enabled(FSYNC_COMPONENT_LOOSE_OBJECT))
+			odb_transaction_files_fsync(loose->base.odb->transaction,
+						    fd, get_tempfile_path(tmp));
+		else if (fsync_object_files > 0)
+			fsync_or_die(fd, get_tempfile_path(tmp));
+		else
+			fsync_component_or_die(FSYNC_COMPONENT_LOOSE_OBJECT,
+					       fd, get_tempfile_path(tmp));
+	}
+	if (close_tempfile_gently(tmp) < 0)
+		goto out;
+	if (mtime) {
+		struct utimbuf times = { .actime = *mtime, .modtime = *mtime };
+
+		if (utime(get_tempfile_path(tmp), &times) < 0 &&
+		    !(flags & ODB_WRITE_OBJECT_SILENT))
+			warning_errno(_("failed utime() on '%s'"), path->buf);
+	}
+
+	/*
+	 * The name describes the content, and concurrent writes can differ in
+	 * zlib settings or in the representation of the loose object.
+	 */
+	ret = finalize_object_file_flags(repo, get_tempfile_path(tmp), path->buf,
+					 finalize_flags);
+	goto cleanup;
+
+out:
+	if (!(flags & ODB_WRITE_OBJECT_SILENT))
+		error_errno(_("unable to write chunked blob data to '%s'"), path->buf);
+cleanup:
+	delete_tempfile(&tmp);
+	strbuf_release(&template);
+	return ret;
+}
+
+static int write_chunk(struct odb_source_loose *loose, struct strbuf *path,
+		       struct strbuf *compressed, const unsigned char *data,
+		       size_t len, const unsigned char *digest,
+		       enum odb_write_object_flags flags, struct strvec *written)
+{
+	struct z_stream_s z = { 0 };
+	int status, ret;
+	enum finalize_object_file_flags finalize_flags =
+		chunk_fsync_enabled() && !loose->will_destroy ?
+		FOF_REPLACE_EXISTING : FOF_SKIP_COLLISION_CHECK;
+
+	chunk_path(path, loose->base.path, digest);
+	if (check_and_freshen_file(path->buf, 0, NULL)) {
+		strbuf_grow(compressed, len);
+		ret = read_chunk_file(path->buf, (unsigned char *)compressed->buf,
+				      len, digest, true);
+		if (!ret && (loose->will_destroy ||
+			     (batch_fsync_enabled(FSYNC_COMPONENT_LOOSE_OBJECT) &&
+			      chunk_write_is_staged(loose)) ||
+			     !harden_existing_chunk(path->buf)))
+			return 0;
+
+		/* Replace a corrupt or unsyncable chunk with a verified copy. */
+		finalize_flags = FOF_REPLACE_EXISTING;
+		/* Another manifest may already depend on this staged path. */
+		written = NULL;
+	}
+
+	if (deflateInit(&z, repo_config_values(loose->base.odb->repo)->zlib_compression_level) != Z_OK)
+		goto compress_error;
+	z.avail_out = deflateBound(&z, len);
+	strbuf_grow(compressed, z.avail_out);
+	z.next_out = (unsigned char *)compressed->buf;
+	z.next_in = (unsigned char *)data;
+	z.avail_in = len;
+	status = deflate(&z, Z_FINISH);
+	deflateEnd(&z);
+	if (status != Z_STREAM_END || z.avail_in)
+		goto compress_error;
+
+	ret = write_chunk_file(loose, path, compressed->buf, z.total_out, NULL,
+			       flags, finalize_flags);
+	if (!ret && written)
+		strvec_push(written, path->buf);
+	return ret;
+
+compress_error:
+	if (!(flags & ODB_WRITE_OBJECT_SILENT))
+		error(_("unable to compress blob chunk '%s'"), path->buf);
+	return -1;
+}
+
+int odb_chunked_write(struct odb_source_loose *loose,
+		      struct odb_stream *stream,
+		      const struct object_id *expected_oid,
+		      const struct object_id *compat_oid,
+		      const time_t *mtime,
+		      enum odb_write_object_flags flags,
+		      struct object_id *result_oid)
+{
+	struct repository *repo = loose->base.odb->repo;
+	const struct git_hash_algo *compat = repo->compat_hash_algo;
+	struct git_hash_ctx ctx, compat_ctx;
+	struct object_id oid, computed_compat_oid;
+	struct strbuf manifest = STRBUF_INIT;
+	struct strbuf compressed = STRBUF_INIT;
+	struct strbuf path = STRBUF_INIT;
+	struct strvec written = STRVEC_INIT;
+	unsigned char *buf;
+	unsigned char size_buf[sizeof(uint64_t)];
+	unsigned char checksum[GIT_SHA256_RAWSZ];
+	char header[MAX_HEADER_LEN];
+	size_t begin = 0, end = 0, remaining = stream->size;
+	int header_len, ret = -1;
+	bool publishing_manifest = false;
+
+	if (stream->type != OBJ_BLOB || stream->size <= ODB_FASTCDC_MAX)
+		BUG("chunk writer requires a large blob stream");
+
+	buf = xmalloc(2 * ODB_FASTCDC_MAX);
+	header_len = format_object_header(header, sizeof(header), OBJ_BLOB, stream->size);
+	git_hash_init(&ctx, repo->hash_algo);
+	git_hash_update(&ctx, header, header_len);
+	if (compat && !compat_oid) {
+		git_hash_init(&compat_ctx, compat);
+		git_hash_update(&compat_ctx, header, header_len);
+	}
+	strbuf_add(&manifest, manifest_magic, sizeof(manifest_magic));
+	put_be64(size_buf, stream->size);
+	strbuf_add(&manifest, size_buf, sizeof(size_buf));
+
+	while (remaining || begin < end) {
+		unsigned char entry[MANIFEST_ENTRY_SIZE];
+		unsigned char *digest = entry + sizeof(uint32_t);
+		size_t len;
+
+		if (end - begin < ODB_FASTCDC_MAX && remaining) {
+			memmove(buf, buf + begin, end - begin);
+			end -= begin;
+			begin = 0;
+			while (end < 2 * ODB_FASTCDC_MAX && remaining) {
+				size_t want = MIN(remaining, 2 * ODB_FASTCDC_MAX - end);
+				ssize_t n = odb_stream_read(stream, buf + end, want);
+
+				if (n <= 0) {
+					error(_("unable to read complete blob for chunking"));
+					goto discard_hash;
+				}
+				end += n;
+				remaining -= n;
+			}
+		}
+
+		len = odb_fastcdc_cut(buf + begin, MIN(end - begin, ODB_FASTCDC_MAX));
+		hash_sha256(buf + begin, len, digest);
+		if (write_chunk(loose, &path, &compressed, buf + begin, len, digest,
+				flags, expected_oid ? NULL : &written))
+			goto discard_hash;
+		git_hash_update(&ctx, buf + begin, len);
+		if (compat && !compat_oid)
+			git_hash_update(&compat_ctx, buf + begin, len);
+		put_be32(entry, len);
+		strbuf_add(&manifest, entry, sizeof(entry));
+		begin += len;
+	}
+	if (odb_stream_read(stream, buf, 1) != 0) {
+		error(_("blob stream size changed while chunking"));
+		goto discard_hash;
+	}
+
+	git_hash_final_oid(&oid, &ctx);
+	if (compat && !compat_oid) {
+		git_hash_final_oid(&computed_compat_oid, &compat_ctx);
+		compat_oid = &computed_compat_oid;
+	}
+	if (expected_oid && !oideq(&oid, expected_oid)) {
+		error(_("object data changed while chunking %s"), oid_to_hex(expected_oid));
+		goto out;
+	}
+	if (!expected_oid && odb_freshen_object(loose->base.odb, &oid)) {
+		ret = 0;
+		goto out;
+	}
+
+	/* A failed map write must leave the object eligible for a retry. */
+	if (compat_oid && (repo_add_loose_object_map(loose, &oid, compat_oid) ||
+			   (!loose->will_destroy && !chunk_write_is_staged(loose) &&
+			    loose_object_map_fsync(loose))))
+		goto out;
+
+	odb_loose_path(loose, &path, &oid);
+	hash_sha256(manifest.buf, manifest.len, checksum);
+	strbuf_add(&manifest, checksum, sizeof(checksum));
+	publishing_manifest = true;
+	ret = write_chunk_file(loose, &path, manifest.buf, manifest.len, mtime,
+			       flags, FOF_SKIP_COLLISION_CHECK);
+	goto out;
+
+discard_hash:
+	git_hash_discard(&ctx);
+	if (compat && !compat_oid)
+		git_hash_discard(&compat_ctx);
+out:
+	if (!publishing_manifest) {
+		for (size_t i = 0; i < written.nr; i++) {
+			if (unlink_or_warn(written.v[i]))
+				ret = -1;
+		}
+	}
+	if (!ret && result_oid)
+		oidcpy(result_oid, &oid);
+	free(buf);
+	strbuf_release(&manifest);
+	strbuf_release(&compressed);
+	strbuf_release(&path);
+	strvec_clear(&written);
+	return ret;
 }

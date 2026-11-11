@@ -400,6 +400,12 @@ int finalize_object_file_flags(struct repository *repo,
 	int ret;
 	struct repo_config_values *cfg = repo_config_values(repo);
 
+	if (flags & FOF_REPLACE_EXISTING) {
+		if (rename(tmpfile, filename))
+			return error_errno(_("unable to replace file %s"), filename);
+		goto out;
+	}
+
 retry:
 	ret = 0;
 

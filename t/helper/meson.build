@@ -79,6 +79,7 @@ test_tool_sources = [
   'test-wildmatch.c',
   'test-windows-named-pipe.c',
   'test-write-cache.c',
+  'test-write-chunked-blob.c',
   'test-xml-encode.c',
   'test-zlib.c',
 ]

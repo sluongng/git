@@ -11,6 +11,7 @@
 #include "loose.h"
 #include "lockfile.h"
 #include "oidtree.h"
+#include "write-or-die.h"
 
 static const char *loose_object_header = "# loose-object-idx\n";
 
@@ -196,6 +197,30 @@ int repo_add_loose_object_map(struct odb_source_loose *loose,
 		return -1;
 	insert_loose_map(loose, oid, compat_oid);
 	return 0;
+}
+
+int loose_object_map_fsync(struct odb_source_loose *loose)
+{
+	char *path;
+	int fd, ret = 0;
+
+	if (fsync_object_files <= 0 &&
+	    !(fsync_components & (FSYNC_COMPONENT_LOOSE_OBJECT | FSYNC_COMPONENT_OBJECT_MAP)))
+		return 0;
+
+	path = xstrfmt("%s/loose-object-idx", loose->base.path);
+	fd = open(path, O_WRONLY);
+	if (fd < 0) {
+		if (errno != ENOENT)
+			ret = error_errno(_("unable to open loose object index %s"), path);
+	} else {
+		if (fsync_file(fd) < 0)
+			ret = error_errno(_("unable to fsync loose object index %s"), path);
+		if (close(fd) < 0 && !ret)
+			ret = error_errno(_("unable to close loose object index %s"), path);
+	}
+	free(path);
+	return ret;
 }
 
 int repo_loose_object_map_oid(struct repository *repo,

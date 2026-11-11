@@ -54,6 +54,7 @@ enum fsync_component {
 #endif
 
 /* IO helper functions */
+int fsync_file(int fd);
 void fsync_or_die(int fd, const char *);
 int fsync_component(enum fsync_component component, int fd);
 void fsync_component_or_die(enum fsync_component component, int fd, const char *msg);

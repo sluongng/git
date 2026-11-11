@@ -106,6 +106,7 @@ int stream_object_signature(struct repository *r,
 
 enum finalize_object_file_flags {
 	FOF_SKIP_COLLISION_CHECK = 1,
+	FOF_REPLACE_EXISTING = 2,
 };
 
 int finalize_object_file(struct repository *repo,
