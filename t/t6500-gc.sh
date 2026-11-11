@@ -4,6 +4,7 @@ test_description='basic git gc tests
 '
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-filev2.sh
 . "$TEST_DIRECTORY"/lib-terminal.sh
 
 test_expect_success 'setup' '
@@ -354,6 +355,66 @@ test_expect_success '--expire-to with --prune=now sets repack --expire-to' '
 	GIT_TRACE2_EVENT=$(pwd)/trace2.txt git -C cruft--max-size gc --cruft --prune=now --expire-to="$expire_to" &&
 	test_subcommand git repack -d -l --cruft --cruft-expiration=now --expire-to="$expire_to" <trace2.txt
 '
+
+test_expect_success 'filev2 gc backs up expired chunked blobs' '
+	git init --object-storage-format=filev2 expire-filev2 &&
+	git init expire-backup &&
+	test_filev2_blob >expire-filev2/live &&
+	git -C expire-filev2 add live &&
+	test_commit -C expire-filev2 initial &&
+	live_oid=$(git -C expire-filev2 rev-parse HEAD:live) &&
+	{
+		cat expire-filev2/live &&
+		echo expired
+	} >expire-filev2/unreachable &&
+	expired_oid=$(git -C expire-filev2 hash-object -w unreachable) &&
+	expired_manifest=expire-filev2/.git/objects/$(test_oid_to_path "$expired_oid") &&
+	# Prune treats "now" as covering even a future timestamp.
+	test-tool chmtime +86400 "$expired_manifest" &&
+	git -C expire-filev2 gc --cruft --prune=now \
+		--expire-to="$PWD/expire-backup/.git/objects/pack/pack" &&
+	test_must_fail git -C expire-filev2 cat-file -e "$expired_oid" &&
+	test_must_fail git -C expire-backup cat-file -e "$live_oid" &&
+	git -C expire-backup cat-file blob "$expired_oid" >actual &&
+	test_cmp_bin expire-filev2/unreachable actual &&
+	git -C expire-filev2 cat-file blob "$live_oid" >actual &&
+	test_cmp_bin expire-filev2/live actual
+'
+
+for storage in loose kept-pack
+do
+	test_expect_success "filev2 gc keeps chunks of a recent $storage commit" '
+		hook_repo=hook-$storage &&
+		git init --object-storage-format=filev2 "$hook_repo" &&
+		test_commit -C "$hook_repo" initial &&
+		test_filev2_blob >"$hook_repo/large" &&
+		git -C "$hook_repo" add large &&
+		git -C "$hook_repo" commit -m large &&
+		git -C "$hook_repo" rev-parse HEAD >"$hook_repo/.git/recent-tip" &&
+		hook_blob=$(git -C "$hook_repo" rev-parse HEAD:large) &&
+		if test "$storage" = kept-pack
+		then
+			git -C "$hook_repo" repack -a -d &&
+			set -- "$hook_repo"/.git/objects/pack/pack-*.pack &&
+			test_path_is_file "$1" &&
+			>"${1%.pack}.keep"
+		fi &&
+		git -C "$hook_repo" reset --hard HEAD^ &&
+		git -C "$hook_repo" reflog expire --expire=all --all &&
+		find "$hook_repo/.git/objects" -type f -exec test-tool chmtime -86400 {} + &&
+		write_script "$hook_repo/recent-hook" <<-\EOF &&
+		if test -f .git/recent-tip
+		then
+			cat .git/recent-tip && rm .git/recent-tip
+		fi
+		EOF
+		git -C "$hook_repo" -c gc.recentObjectsHook=./recent-hook \
+			gc --cruft --prune=1.hour.ago &&
+		test_path_is_missing "$hook_repo/.git/recent-tip" &&
+		git -C "$hook_repo" cat-file -e "$hook_blob" &&
+		git -C "$hook_repo" fsck --no-dangling
+	'
+done
 
 
 test_expect_success '--expire-to with --no-cruft sets repack -A' '

@@ -167,6 +167,7 @@ int cmd_repack(int argc,
 	struct oidset drop_oids = OIDSET_INIT;
 	struct pack_geometry geometry = { 0 };
 	struct tempfile *refs_snapshot = NULL;
+	struct tempfile *kept_chunked_oids = NULL;
 	int i, ret;
 	int show_progress;
 
@@ -181,6 +182,7 @@ int cmd_repack(int argc,
 	enum repack_write_midx_mode write_midx = REPACK_WRITE_MIDX_NONE;
 	const char *cruft_expiration = NULL;
 	const char *expire_to = NULL;
+	const char *record_kept_chunked = NULL;
 	const char *filter_to = NULL;
 	const char *opt_window = NULL;
 	const char *opt_window_memory = NULL;
@@ -255,6 +257,9 @@ int cmd_repack(int argc,
 			   PARSE_OPT_HIDDEN),
 		OPT_STRING(0, "expire-to", &expire_to, N_("dir"),
 			   N_("pack prefix to store a pack containing pruned objects")),
+		OPT_STRING_F(0, "record-kept-chunked", &record_kept_chunked, N_("path"),
+			     N_("record retained chunked loose blobs for prune"),
+			     PARSE_OPT_HIDDEN),
 		OPT_STRING(0, "filter-to", &filter_to, N_("dir"),
 			   N_("pack prefix to store a pack containing filtered out objects")),
 		OPT_BOOL(0, "drop-filtered", &drop_filtered,
@@ -410,6 +415,26 @@ int cmd_repack(int argc,
 	if (pack_everything & PACK_CRUFT)
 		pack_everything |= ALL_INTO_ONE;
 
+	po_args.exclude_chunked =
+		repo->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2;
+	cruft_po_args.exclude_chunked = po_args.exclude_chunked;
+	if (!record_kept_chunked && po_args.exclude_chunked &&
+	    (pack_everything & PACK_CRUFT) &&
+	    delete_redundant && expire_to) {
+		char *path = xstrfmt("%s/kept-chunked-XXXXXX",
+				    repo_get_object_directory(repo));
+
+		kept_chunked_oids = xmks_tempfile(path);
+		if (close_tempfile_gently(kept_chunked_oids) < 0)
+			die_errno(_("unable to close %s"), path);
+		free(path);
+		record_kept_chunked = get_tempfile_path(kept_chunked_oids);
+	}
+	if (po_args.exclude_chunked) {
+		po_args.kept_chunked_oids = record_kept_chunked;
+		cruft_po_args.kept_chunked_oids = record_kept_chunked;
+	}
+
 	if (write_bitmaps < 0) {
 		if (write_midx == REPACK_WRITE_MIDX_NONE &&
 		    (!(pack_everything & ALL_INTO_ONE) || !is_bare_repository(repo)))
@@ -422,6 +447,12 @@ int cmd_repack(int argc,
 	if (write_bitmaps && !(pack_everything & ALL_INTO_ONE) &&
 	    write_midx == REPACK_WRITE_MIDX_NONE)
 		die(_(incremental_bitmap_conflict_error));
+
+	if (write_bitmaps > 0 && write_midx != REPACK_WRITE_MIDX_NONE &&
+	    po_args.exclude_chunked) {
+		warning(_("disabling multi-pack bitmaps for filev2 repacks"));
+		write_bitmaps = 0;
+	}
 
 	if (write_bitmaps && po_args.local &&
 	    odb_has_alternates(repo->objects)) {
@@ -687,6 +718,12 @@ int cmd_repack(int argc,
 			 * main repository regardless of size.
 			 */
 			opts.destination = expire_to;
+			/*
+			 * The new packs do not list the retained chunked blobs.
+			 * Exclude those OIDs explicitly so the backup only
+			 * picks up chunked blobs that are eligible for expiry.
+			 */
+			cruft_po_args.exclude_chunked = false;
 			ret = write_cruft_pack(&opts, NULL, 0ul, &names,
 					       &existing);
 			if (ret)
@@ -785,6 +822,7 @@ int cmd_repack(int argc,
 	}
 
 cleanup:
+	delete_tempfile(&kept_chunked_oids);
 	string_list_clear(&keep_pack_list, 0);
 	string_list_clear(&names, 1);
 	oidset_clear(&drop_oids);

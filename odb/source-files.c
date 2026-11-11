@@ -3,6 +3,7 @@
 #include "blob.h"
 #include "chdir-notify.h"
 #include "config.h"
+#include "date.h"
 #include "gettext.h"
 #include "hex.h"
 #include "lockfile.h"
@@ -25,6 +26,7 @@
 #include "string-list.h"
 #include "strmap.h"
 #include "strvec.h"
+#include "tempfile.h"
 #include "tree.h"
 #include "write-or-die.h"
 
@@ -683,12 +685,14 @@ static int odb_source_files_begin_transaction(struct odb_source *source,
 static int too_many_loose_objects(struct odb_source_files *files, int limit)
 {
 	unsigned long loose_count;
+	enum odb_count_objects_flags flags = ODB_COUNT_OBJECTS_APPROXIMATE;
 
 	if (limit <= 0)
 		return 0;
 
-	if (odb_source_count_objects(&files->dirs->loose->base, ODB_COUNT_OBJECTS_APPROXIMATE,
-				     &loose_count) < 0)
+	if (files->base.odb->repo->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2)
+		flags |= ODB_COUNT_OBJECTS_EXCLUDE_CHUNKED;
+	if (odb_source_count_objects(&files->dirs->loose->base, flags, &loose_count) < 0)
 		return 0;
 
 	/*
@@ -984,9 +988,13 @@ int odb_source_files_optimize(struct odb_source *source,
 	struct odb_source_files *files = odb_source_files_downcast(source);
 	struct repository *repo = source->odb->repo;
 	struct child_process repack_cmd = CHILD_PROCESS_INIT;
+	struct odb_optimize_options normalized_opts;
+	struct strbuf expiry_arg = STRBUF_INIT;
+	struct tempfile *kept_chunked_oids = NULL;
 	unsigned long big_pack_threshold = 0;
 	int gc_auto_threshold = 6700;
 	int gc_auto_pack_limit = 50;
+	bool prune_loose = opts->strategy != ODB_OPTIMIZE_GEOMETRIC;
 	int ret;
 
 	repo_config_get_int(repo, "gc.auto", &gc_auto_threshold);
@@ -995,6 +1003,27 @@ int odb_source_files_optimize(struct odb_source *source,
 
 	if (repo->repository_format_precious_objects)
 		return 0;
+
+	if (repo->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2 &&
+	    opts->prune_expire &&
+	    (strcmp(opts->prune_expire, "now") || (opts->cruft_packs && opts->expire_to))) {
+		timestamp_t expiry;
+
+		/*
+		 * Cruft repacking can retain a tree whose blob stays loose.
+		 * Use the same cutoff for both commands so prune keeps the blob.
+		 */
+		if (parse_expiry_date(opts->prune_expire, &expiry))
+			return error(_("failed to parse prune expiry value %s"), opts->prune_expire);
+		normalized_opts = *opts;
+		normalized_opts.prune_expire = NULL;
+		if (expiry) {
+			/* The raw date parser reserves TIME_MAX as an error. */
+			strbuf_addf(&expiry_arg, "@%"PRItime" +0000", MIN(expiry, TIME_MAX - 1));
+			normalized_opts.prune_expire = expiry_arg.buf;
+		}
+		opts = &normalized_opts;
+	}
 
 	repack_cmd.git_cmd = 1;
 	repack_cmd.odb_to_close = repo->objects;
@@ -1091,6 +1120,7 @@ int odb_source_files_optimize(struct odb_source *source,
 				     geometry.split_factor);
 		} else {
 			add_repack_all_option(repo, opts, NULL, &repack_cmd.args);
+			prune_loose = repo->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2;
 		}
 		if (repo->settings.core_multi_pack_index)
 			strvec_push(&repack_cmd.args, "--write-midx");
@@ -1103,13 +1133,29 @@ int odb_source_files_optimize(struct odb_source *source,
 		die("unknown maintenance strategy '%d'", opts->strategy);
 	}
 
+	if (repo->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2 &&
+	    prune_loose && opts->prune_expire) {
+		char *path = xstrfmt("%s/kept-chunked-XXXXXX",
+				    repo_get_object_directory(repo));
+
+		kept_chunked_oids = xmks_tempfile(path);
+		if (close_tempfile_gently(kept_chunked_oids) < 0)
+			die_errno(_("unable to close %s"), path);
+		free(path);
+		strvec_pushf(&repack_cmd.args, "--record-kept-chunked=%s",
+			     get_tempfile_path(kept_chunked_oids));
+	}
+
 	if (run_command(&repack_cmd)) {
 		ret = error("failed to run %s", repack_cmd.args.v[0]);
 		goto out;
 	}
 
-	/* Geometric repacking uses cruft packs, so we don't have to prune separately. */
-	if (opts->strategy != ODB_OPTIMIZE_GEOMETRIC && opts->prune_expire) {
+	/*
+	 * Geometric maintenance normally expires objects through cruft packs.
+	 * A full filev2 repack leaves chunked blobs loose, so prune them here.
+	 */
+	if (prune_loose && opts->prune_expire) {
 		struct child_process prune_cmd = CHILD_PROCESS_INIT;
 
 		strvec_pushl(&prune_cmd.args, "prune", "--expire", NULL);
@@ -1120,6 +1166,9 @@ int odb_source_files_optimize(struct odb_source *source,
 		if (repo_has_promisor_remote(repo))
 			strvec_push(&prune_cmd.args,
 				    "--exclude-promisor-objects");
+		if (kept_chunked_oids)
+			strvec_pushf(&prune_cmd.args, "--keep-chunked=%s",
+				     get_tempfile_path(kept_chunked_oids));
 		prune_cmd.git_cmd = 1;
 
 		if (run_command(&prune_cmd)) {
@@ -1135,6 +1184,8 @@ int odb_source_files_optimize(struct odb_source *source,
 	ret = 0;
 
 out:
+	delete_tempfile(&kept_chunked_oids);
+	strbuf_release(&expiry_arg);
 	return ret;
 }
 

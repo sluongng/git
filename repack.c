@@ -40,6 +40,12 @@ void prepare_pack_objects(struct child_process *cmd,
 		strvec_push(&cmd->args,  "--delta-base-offset");
 	if (!args->pack_kept_objects)
 		strvec_push(&cmd->args,  "--honor-pack-keep");
+	if (args->exclude_chunked)
+		strvec_push(&cmd->args, "--exclude-chunked");
+	if (args->kept_chunked_oids)
+		strvec_pushf(&cmd->args, "--%s=%s",
+			     args->exclude_chunked ? "record-kept-chunked" : "exclude-kept-chunked",
+			     args->kept_chunked_oids);
 	strvec_push(&cmd->args, out);
 	cmd->git_cmd = 1;
 	cmd->out = -1;

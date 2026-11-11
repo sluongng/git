@@ -565,17 +565,18 @@ static int odb_source_loose_count_objects(struct odb_source *source,
 {
 	struct odb_source_loose *loose = odb_source_loose_downcast(source);
 	const unsigned hexsz = source->odb->repo->hash_algo->hexsz - 2;
-	char *path = NULL;
+	struct strbuf path = STRBUF_INIT;
 	DIR *dir = NULL;
 	int ret;
 
 	if (flags & ODB_COUNT_OBJECTS_APPROXIMATE) {
 		unsigned long count = 0;
 		struct dirent *ent;
+		size_t shard_len;
 
-		path = xstrfmt("%s/17", source->path);
-
-		dir = opendir(path);
+		strbuf_addf(&path, "%s/17", source->path);
+		shard_len = path.len;
+		dir = opendir(path.buf);
 		if (!dir) {
 			if (errno == ENOENT) {
 				*out = 0;
@@ -583,7 +584,7 @@ static int odb_source_loose_count_objects(struct odb_source *source,
 				goto out;
 			}
 
-			ret = error_errno("cannot open object shard '%s'", path);
+			ret = error_errno("cannot open object shard '%s'", path.buf);
 			goto out;
 		}
 
@@ -591,6 +592,12 @@ static int odb_source_loose_count_objects(struct odb_source *source,
 			if (strspn(ent->d_name, "0123456789abcdef") != hexsz ||
 			    ent->d_name[hexsz] != '\0')
 				continue;
+			if (flags & ODB_COUNT_OBJECTS_EXCLUDE_CHUNKED) {
+				strbuf_setlen(&path, shard_len);
+				strbuf_addf(&path, "/%s", ent->d_name);
+				if (odb_chunked_is_manifest_file(path.buf))
+					continue;
+			}
 			count++;
 		}
 
@@ -606,7 +613,7 @@ static int odb_source_loose_count_objects(struct odb_source *source,
 out:
 	if (dir)
 		closedir(dir);
-	free(path);
+	strbuf_release(&path);
 	return ret;
 }
 

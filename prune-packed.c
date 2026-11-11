@@ -1,6 +1,7 @@
 #include "git-compat-util.h"
 #include "gettext.h"
 #include "object-file.h"
+#include "odb/chunked.h"
 #include "packfile.h"
 #include "progress.h"
 #include "prune-packed.h"
@@ -28,6 +29,10 @@ static int prune_object(const struct object_id *oid, const char *path,
 	struct prune_data *d = data;
 
 	if (!has_object_pack(d->r, oid))
+		return 0;
+
+	if (d->r->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2 &&
+	    odb_chunked_is_manifest_file(path))
 		return 0;
 
 	if (d->opts & PRUNE_PACKED_DRY_RUN)

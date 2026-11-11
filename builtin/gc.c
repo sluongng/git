@@ -31,6 +31,7 @@
 #include "packfile.h"
 #include "object-file.h"
 #include "odb.h"
+#include "odb/chunked.h"
 #include "path.h"
 #include "reflog.h"
 #include "rerere.h"
@@ -978,12 +979,18 @@ struct write_loose_object_data {
 
 static int loose_object_auto_limit = 100;
 
+static bool packable_loose_object(const char *path)
+{
+	return the_repository->object_storage_format != OBJECT_STORAGE_FORMAT_FILEV2 ||
+		!odb_chunked_is_manifest_file(path);
+}
+
 static int loose_object_count(const struct object_id *oid UNUSED,
-			      const char *path UNUSED,
+			      const char *path,
 			      void *data)
 {
 	int *count = (int*)data;
-	if (++(*count) >= loose_object_auto_limit)
+	if (packable_loose_object(path) && ++(*count) >= loose_object_auto_limit)
 		return 1;
 	return 0;
 }
@@ -1006,17 +1013,20 @@ static int loose_object_auto_condition(struct gc_config *cfg UNUSED)
 }
 
 static int bail_on_loose(const struct object_id *oid UNUSED,
-			 const char *path UNUSED,
+			 const char *path,
 			 void *data UNUSED)
 {
-	return 1;
+	return packable_loose_object(path);
 }
 
 static int write_loose_object_to_stdin(const struct object_id *oid,
-				       const char *path UNUSED,
+				       const char *path,
 				       void *data)
 {
 	struct write_loose_object_data *d = (struct write_loose_object_data *)data;
+
+	if (!packable_loose_object(path))
+		return 0;
 
 	fprintf(d->in, "%s\n", oid_to_hex(oid));
 

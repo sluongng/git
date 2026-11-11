@@ -578,6 +578,8 @@ enum odb_count_objects_flags {
 	 * subject to the specific source's implementation.
 	 */
 	ODB_COUNT_OBJECTS_APPROXIMATE = (1 << 0),
+	/* Omit chunked blobs from approximate counts for repack scheduling. */
+	ODB_COUNT_OBJECTS_EXCLUDE_CHUNKED = (1 << 1),
 };
 
 /*

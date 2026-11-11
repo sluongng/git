@@ -18,6 +18,7 @@
 #include "object-name.h"
 #include "odb.h"
 #include "odb/chunked.h"
+#include "oidset.h"
 #include "shallow.h"
 
 static const char * const prune_usage[] = {
@@ -28,6 +29,7 @@ static int show_only;
 static int verbose;
 static timestamp_t expire;
 static int show_progress = -1;
+static struct oidset kept_chunked;
 
 static int prune_tmp_file(const char *fullpath)
 {
@@ -88,7 +90,8 @@ static int prune_object(const struct object_id *oid, const char *fullpath,
 	struct rev_info *revs = data;
 	struct stat st;
 
-	if (is_object_reachable(oid, revs))
+	if ((oidset_size(&kept_chunked) && oidset_contains(&kept_chunked, oid)) ||
+	    is_object_reachable(oid, revs))
 		return 0;
 
 	if (lstat(fullpath, &st)) {
@@ -158,6 +161,7 @@ int cmd_prune(int argc,
 {
 	struct rev_info revs;
 	int exclude_promisor_objects = 0;
+	const char *keep_chunked_path = NULL;
 	const struct option options[] = {
 		OPT__DRY_RUN(&show_only, N_("do not remove, show only")),
 		OPT__VERBOSE(&verbose, N_("report pruned objects")),
@@ -166,6 +170,9 @@ int cmd_prune(int argc,
 				N_("expire objects older than <time>")),
 		OPT_BOOL(0, "exclude-promisor-objects", &exclude_promisor_objects,
 			 N_("limit traversal to objects outside promisor packfiles")),
+		OPT_STRING_F(0, "keep-chunked", &keep_chunked_path, N_("path"),
+			     N_("keep loose blobs retained during repack"),
+			     PARSE_OPT_HIDDEN),
 		OPT_END()
 	};
 	char *s;
@@ -175,6 +182,9 @@ int cmd_prune(int argc,
 	disable_replace_refs();
 
 	argc = parse_options(argc, argv, prefix, options, prune_usage, 0);
+
+	if (keep_chunked_path)
+		oidset_parse_file(&kept_chunked, keep_chunked_path, repo->hash_algo);
 
 	repo_init_revisions(repo, &revs, prefix);
 	if (repo->repository_format_precious_objects)
@@ -214,6 +224,7 @@ int cmd_prune(int argc,
 		prune_shallow(show_only ? PRUNE_SHOW_ONLY : 0);
 	}
 
+	oidset_clear(&kept_chunked);
 	release_revisions(&revs);
 	return 0;
 }

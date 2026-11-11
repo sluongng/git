@@ -19,6 +19,8 @@ struct pack_objects_args {
 	int path_walk;
 	int delta_base_offset;
 	int pack_kept_objects;
+	bool exclude_chunked;
+	const char *kept_chunked_oids;
 	struct list_objects_filter_options filter_options;
 };
 

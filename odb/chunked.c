@@ -66,6 +66,26 @@ bool odb_chunked_is_manifest(const void *data, size_t len)
 	return len >= prefix_len && !memcmp(data, manifest_magic, prefix_len);
 }
 
+bool odb_chunked_is_manifest_file(const char *path)
+{
+	unsigned char prefix[sizeof(manifest_magic) - 1];
+	struct stat st;
+	bool is_manifest = false;
+	int fd, flags = O_RDONLY;
+
+#ifdef O_NONBLOCK
+	flags |= O_NONBLOCK;
+#endif
+	fd = git_open_cloexec(path, flags);
+	if (fd < 0)
+		return false;
+	if (!fstat(fd, &st) && S_ISREG(st.st_mode) &&
+	    read_in_full(fd, prefix, sizeof(prefix)) == (ssize_t)sizeof(prefix))
+		is_manifest = odb_chunked_is_manifest(prefix, sizeof(prefix));
+	close(fd);
+	return is_manifest;
+}
+
 static int read_chunk_file(const char *path, unsigned char *data, size_t len,
 			   const unsigned char *digest, bool quiet)
 {

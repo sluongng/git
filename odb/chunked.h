@@ -11,6 +11,7 @@ struct odb_stream;
 struct repository;
 
 bool odb_chunked_is_manifest(const void *data, size_t len);
+bool odb_chunked_is_manifest_file(const char *path);
 
 /*
  * Open the blob represented by a manifest. The stream owns a copy of the

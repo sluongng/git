@@ -3,6 +3,7 @@
 test_description='git repack works correctly'
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-filev2.sh
 . "${TEST_DIRECTORY}/lib-bitmap.sh"
 . "${TEST_DIRECTORY}/lib-midx.sh"
 . "${TEST_DIRECTORY}/lib-terminal.sh"
@@ -216,6 +217,57 @@ test_expect_success 'filev2 chunks a large blob loosened by repack' '
 	test_file_not_empty loosen-chunks &&
 	git -C loosen-filev2 cat-file blob "$loosen_oid" >loosen-actual &&
 	test_cmp_bin loosen-filev2/large loosen-actual
+'
+
+test_expect_success 'filev2 repack retains chunked blobs' '
+	git init --object-storage-format=filev2 retain-filev2 &&
+	test_filev2_blob >retain-filev2/large &&
+	git -C retain-filev2 add large &&
+	test_commit -C retain-filev2 initial &&
+	retain_oid=$(git -C retain-filev2 rev-parse HEAD:large) &&
+	retain_manifest=retain-filev2/.git/objects/$(test_oid_to_path "$retain_oid") &&
+	cp "$retain_manifest" expect-manifest &&
+	git -C retain-filev2 repack -d &&
+	git -C retain-filev2 repack -a -d --write-midx --write-bitmap-index &&
+	git -C retain-filev2 repack --geometric=2 -d &&
+	git -C retain-filev2 repack --cruft -d &&
+	git -C retain-filev2 maintenance run --task=loose-objects &&
+	test_cmp_bin expect-manifest "$retain_manifest" &&
+	test-tool -C retain-filev2 find-pack --check-count=0 "$retain_oid" &&
+	git -C retain-filev2 fsck --no-dangling &&
+
+	git -c protocol.version=2 clone --no-local "$PWD/retain-filev2" retain-clone &&
+	test_cmp_bin retain-filev2/large retain-clone/large
+'
+
+test_expect_success 'filev2 prune-packed preserves a manifest with a packed copy' '
+	echo "$retain_oid" >retain-objects &&
+	git -C retain-filev2 pack-objects .git/objects/pack/pack <retain-objects &&
+	git -C retain-filev2 prune-packed &&
+	test_cmp_bin expect-manifest "$retain_manifest" &&
+	test-tool -C retain-filev2 find-pack --check-count=1 "$retain_oid"
+'
+
+test_expect_success 'filev2 local repack preserves an existing packed copy with alternates' '
+	git init retain-alternate &&
+	test_commit -C retain-alternate unrelated &&
+	git -C retain-alternate repack -a -d &&
+	echo "$PWD/retain-alternate/.git/objects" >retain-filev2/.git/objects/info/alternates &&
+	git -C retain-filev2 repack -a -d -l &&
+	test_cmp_bin expect-manifest "$retain_manifest" &&
+	test-tool -C retain-filev2 find-pack --check-count=1 "$retain_oid"
+'
+
+test_expect_success 'filev2 full geometric maintenance expires unreachable manifests' '
+	git init --object-storage-format=filev2 expire-geometric &&
+	test_commit -C expire-geometric initial &&
+	expired_oid=$(git -C expire-geometric hash-object -w --stdin <retain-filev2/large) &&
+	expired_manifest=expire-geometric/.git/objects/$(test_oid_to_path "$expired_oid") &&
+	test-tool chmtime -86400 "$expired_manifest" &&
+	git -C expire-geometric -c gc.pruneExpire=now maintenance run --task=geometric-repack &&
+	test_path_is_missing "$expired_manifest" &&
+	test_must_fail git -C expire-geometric cat-file -e "$expired_oid" &&
+	git -C expire-geometric fsck --no-dangling
 '
 
 test_expect_success 'objects made unreachable by grafts only are kept' '

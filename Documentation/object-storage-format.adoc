@@ -11,10 +11,11 @@ larger than 4 MiB. This format requires a Git version that supports it.
 +
 Serving raw loose objects over dumb HTTP requires the `files` format.
 +
-Repacking can replace chunked blobs with ordinary packed objects. It can
-also create chunks when it makes a large packed blob loose. Prune removes
-expired loose manifests and temporary files. Chunk files referenced by
-removed manifests are retained.
+Repacking retains chunked blobs and can create chunks when it makes a large
+packed blob loose. Ordinary fetches can still carry these blobs in packs.
+Repacking with a multi-pack index skips bitmap generation because reachable
+blobs may remain outside the packs. Prune removes expired loose manifests and
+temporary files. Chunk files referenced by removed manifests are retained.
 Failed writes can leave unreferenced chunks in the object directory.
 Streamed and batch writes can temporarily stage copies of shared chunks.
 +

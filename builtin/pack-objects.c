@@ -34,6 +34,7 @@
 #include "object-file.h"
 #include "object-file-convert.h"
 #include "odb.h"
+#include "odb/chunked.h"
 #include "odb/streaming.h"
 #include "replace-object.h"
 #include "dir.h"
@@ -47,6 +48,7 @@
 #include "blob.h"
 #include "tree.h"
 #include "path-walk.h"
+#include "write-or-die.h"
 
 /*
  * Objects we are going to pack are collected in the `to_pack` structure.
@@ -285,6 +287,9 @@ struct configured_exclusion {
 static struct oidmap configured_exclusions;
 
 static struct oidset excluded_by_config;
+static struct oidset exclude_kept_chunked;
+static FILE *kept_chunked_file;
+static int exclude_chunked;
 static int name_hash_version = -1;
 
 enum stdin_packs_mode {
@@ -1757,6 +1762,10 @@ static int want_object_in_pack_mtime(const struct object_id *oid,
 	int want;
 	struct packfile_list_entry *e;
 
+	if (!exclude && oidset_size(&exclude_kept_chunked) &&
+	    oidset_contains(&exclude_kept_chunked, oid))
+		return 0;
+
 	if (!exclude && local) {
 		/*
 		 * Note that we start iterating at `dirs->next` so that we
@@ -1801,6 +1810,25 @@ static int want_object_in_pack_mtime(const struct object_id *oid,
 				packfile_list_prepend(&dir->packed->packs, p);
 			if (want != -1)
 				return want;
+		}
+	}
+
+	if (!exclude && exclude_chunked && !*found_pack) {
+		struct strbuf path = STRBUF_INIT;
+		bool chunked;
+
+		/*
+		 * Leave manifest-backed blobs loose. If there is already a
+		 * usable pack entry, keep that copy without relying on the
+		 * manifest prefix as evidence that all its chunks are intact.
+		 */
+		odb_loose_path(files->dirs->loose, &path, oid);
+		chunked = odb_chunked_is_manifest_file(path.buf);
+		strbuf_release(&path);
+		if (chunked) {
+			if (kept_chunked_file)
+				fprintf_or_die(kept_chunked_file, "%s\n", oid_to_hex(oid));
+			return 0;
 		}
 	}
 
@@ -4268,6 +4296,8 @@ static void enumerate_and_traverse_cruft_objects(struct string_list *fresh_packs
 {
 	struct packed_git *p;
 	struct rev_info revs;
+	const struct string_list *recent_hooks;
+	int skip_kept_packs;
 	int ret;
 
 	repo_init_revisions(the_repository, &revs, NULL);
@@ -4276,8 +4306,18 @@ static void enumerate_and_traverse_cruft_objects(struct string_list *fresh_packs
 	revs.tree_objects = 1;
 	revs.blob_objects = 1;
 
-	revs.include_check = cruft_include_check;
-	revs.include_check_obj = cruft_include_check_obj;
+	/*
+	 * A hook can retain a commit in a kept pack whose blob is only
+	 * available as a loose manifest. Walk through those packs when
+	 * recording the manifests that prune must preserve.
+	 */
+	skip_kept_packs = !kept_chunked_file ||
+		repo_config_get_string_multi(the_repository, "gc.recentobjectshook",
+					     &recent_hooks);
+	if (skip_kept_packs) {
+		revs.include_check = cruft_include_check;
+		revs.include_check_obj = cruft_include_check_obj;
+	}
 
 	revs.ignore_missing_links = 1;
 
@@ -4285,7 +4325,7 @@ static void enumerate_and_traverse_cruft_objects(struct string_list *fresh_packs
 		progress_state = start_progress(the_repository,
 						_("Enumerating cruft objects"), 0);
 	ret = add_unseen_recent_objects_to_traversal(&revs, cruft_expiration,
-						     set_cruft_mtime, 1);
+						     set_cruft_mtime, skip_kept_packs);
 	stop_progress(&progress_state);
 
 	if (ret)
@@ -5122,6 +5162,7 @@ int cmd_pack_objects(int argc,
 	int rev_list_index = 0;
 	enum stdin_packs_mode stdin_packs = STDIN_PACKS_MODE_NONE;
 	struct string_list keep_pack_list = STRING_LIST_INIT_NODUP;
+	const char *record_kept_chunked = NULL, *exclude_kept_chunked_path = NULL;
 	struct list_objects_filter_options filter_options =
 		LIST_OBJECTS_FILTER_INIT;
 	struct repo_config_values *cfg = repo_config_values(the_repository);
@@ -5228,6 +5269,15 @@ int cmd_pack_objects(int argc,
 		OPT_BOOL(0, "exclude-promisor-objects-best-effort",
 			 &exclude_promisor_objects_best_effort,
 			 N_("implies --missing=allow-any")),
+		OPT_BOOL_F(0, "exclude-chunked", &exclude_chunked,
+			   N_("keep chunked loose blobs outside maintenance packs"),
+			   PARSE_OPT_HIDDEN),
+		OPT_STRING_F(0, "record-kept-chunked", &record_kept_chunked, N_("path"),
+			     N_("record the chunked loose blobs kept by repack"),
+			     PARSE_OPT_HIDDEN),
+		OPT_STRING_F(0, "exclude-kept-chunked", &exclude_kept_chunked_path, N_("path"),
+			     N_("exclude chunked blobs retained during repack"),
+			     PARSE_OPT_HIDDEN),
 		OPT_BOOL(0, "delta-islands", &use_delta_islands,
 			 N_("respect islands during delta compression")),
 		OPT_STRING_LIST(0, "uri-protocol", &uri_protocols,
@@ -5381,6 +5431,22 @@ int cmd_pack_objects(int argc,
 	if (!pack_to_stdout && thin)
 		die(_("--thin cannot be used to build an indexable pack"));
 
+	die_for_incompatible_opt2(exclude_chunked, "--exclude-chunked",
+				  pack_to_stdout, "--stdout");
+	if (record_kept_chunked) {
+		if (!exclude_chunked)
+			die(_("--record-kept-chunked requires --exclude-chunked"));
+		kept_chunked_file = fopen(record_kept_chunked, "a");
+		if (!kept_chunked_file)
+			die_errno(_("unable to open %s"), record_kept_chunked);
+	}
+	if (exclude_kept_chunked_path) {
+		if (!cruft || pack_to_stdout)
+			die(_("--exclude-kept-chunked requires a cruft pack on disk"));
+		oidset_parse_file(&exclude_kept_chunked, exclude_kept_chunked_path,
+				  repo->hash_algo);
+	}
+
 	die_for_incompatible_opt2(keep_unreachable, "--keep-unreachable",
 				  unpack_unreachable, "--unpack-unreachable");
 	if (!rev_list_all || !rev_list_reflog || !rev_list_index)
@@ -5488,6 +5554,8 @@ int cmd_pack_objects(int argc,
 	if (include_tag && nr_result)
 		refs_for_each_tag_ref(get_main_ref_store(the_repository),
 				      add_ref_tag, NULL);
+	if (kept_chunked_file && fclose(kept_chunked_file) < 0)
+		die_errno(_("unable to close %s"), record_kept_chunked);
 	stop_progress(&progress_state);
 	trace2_region_leave("pack-objects", "enumerate-objects",
 			    the_repository);
@@ -5525,6 +5593,7 @@ int cmd_pack_objects(int argc,
 
 cleanup:
 	clear_packing_data(&to_pack);
+	oidset_clear(&exclude_kept_chunked);
 	list_objects_filter_release(&filter_options);
 	string_list_clear(&keep_pack_list, 0);
 	strvec_clear(&rp);
