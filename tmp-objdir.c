@@ -4,6 +4,7 @@
 #include "chdir-notify.h"
 #include "dir.h"
 #include "environment.h"
+#include "loose.h"
 #include "object-file.h"
 #include "path.h"
 #include "string-list.h"
@@ -11,6 +12,7 @@
 #include "strvec.h"
 #include "quote.h"
 #include "odb.h"
+#include "odb/chunked.h"
 #include "odb/source.h"
 #include "odb/source-files.h"
 #include "odb/source-loose.h"
@@ -59,7 +61,7 @@ static void tmp_objdir_reparent(const char *old_cwd,
  * Restore the primary source that was previously replaced by
  * `tmp_objdir_create()`.
  */
-static void tmp_objdir_restore_source(struct tmp_objdir *t)
+static struct odb_files_dir *tmp_objdir_restore_source(struct tmp_objdir *t)
 {
 	struct odb_source_files *files = odb_source_files_downcast(t->repo->objects->source);
 	struct odb_files_dir *cur_dir = files->dirs;
@@ -73,7 +75,7 @@ static void tmp_objdir_restore_source(struct tmp_objdir *t)
 
 	t->repo->disable_ref_updates = t->disable_ref_updates;
 	files->dirs = t->orig_dir;
-	odb_files_dir_free(cur_dir);
+	return cur_dir;
 }
 
 int tmp_objdir_destroy(struct tmp_objdir *t)
@@ -87,7 +89,7 @@ int tmp_objdir_destroy(struct tmp_objdir *t)
 		the_tmp_objdir = NULL;
 
 	if (t->orig_dir)
-		tmp_objdir_restore_source(t);
+		odb_files_dir_free(tmp_objdir_restore_source(t));
 
 	err = remove_dir_recursively(&t->path, 0);
 
@@ -233,6 +235,9 @@ struct tmp_objdir *tmp_objdir_create(struct repository *r,
  */
 static int pack_copy_priority(const char *name)
 {
+	/* Loose manifests can reference files under this directory. */
+	if (!strcmp(name, ODB_CHUNK_DIRECTORY))
+		return -1;
 	if (!starts_with(name, "pack"))
 		return 0;
 	if (ends_with(name, ".keep"))
@@ -276,6 +281,12 @@ static int read_dir_paths(struct string_list *out, const char *path)
 	return ret;
 }
 
+static bool merge_loose_mappings(struct tmp_objdir *t)
+{
+	return t->repo->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2 &&
+		t->repo->compat_hash_algo;
+}
+
 static int migrate_paths(struct tmp_objdir *t,
 			 struct strbuf *src, struct strbuf *dst,
 			 enum finalize_object_file_flags flags);
@@ -296,6 +307,8 @@ static int migrate_one(struct tmp_objdir *t,
 			return -1;
 		return migrate_paths(t, src, dst, flags);
 	}
+	if (flags & FOF_REPLACE_EXISTING)
+		return odb_chunked_install_file(t->repo, src->buf, dst->buf);
 	return finalize_object_file_flags(t->repo, src->buf, dst->buf, flags);
 }
 
@@ -322,17 +335,31 @@ static int migrate_paths(struct tmp_objdir *t,
 	for (size_t i = 0; i < paths.nr; i++) {
 		const char *name = paths.items[i].string;
 		enum finalize_object_file_flags flags_copy = flags;
+		int is_chunks = !strcmp(name, ODB_CHUNK_DIRECTORY);
+
+		if ((flags & FOF_REPLACE_EXISTING) && starts_with(name, "tmp_obj_"))
+			continue;
+		if (src_len == t->path.len && merge_loose_mappings(t) &&
+		    !strcmp(name, "loose-object-idx"))
+			continue;
 
 		strbuf_addf(src, "/%s", name);
 		strbuf_addf(dst, "/%s", name);
 
-		if (is_loose_object_shard(name))
+		/* Chunk files can replace a corrupt destination after validation. */
+		if (is_chunks)
+			flags_copy |= FOF_REPLACE_EXISTING;
+		else if (is_loose_object_shard(name))
 			flags_copy |= FOF_SKIP_COLLISION_CHECK;
 
 		ret |= migrate_one(t, src, dst, flags_copy);
 
 		strbuf_setlen(src, src_len);
 		strbuf_setlen(dst, dst_len);
+
+		/* A manifest must never become visible ahead of its chunks. */
+		if (ret && is_chunks)
+			break;
 	}
 
 out:
@@ -343,7 +370,8 @@ out:
 int tmp_objdir_migrate(struct tmp_objdir *t)
 {
 	struct strbuf src = STRBUF_INIT, dst = STRBUF_INIT;
-	int ret;
+	struct odb_files_dir *temp_dir = NULL;
+	int ret = 0;
 
 	if (!t)
 		return 0;
@@ -351,14 +379,24 @@ int tmp_objdir_migrate(struct tmp_objdir *t)
 	if (t->orig_dir) {
 		if (t->will_destroy)
 			BUG("migrating an ODB that was marked for destruction");
-		tmp_objdir_restore_source(t);
+		temp_dir = tmp_objdir_restore_source(t);
 		t->orig_dir = NULL;
 	}
 
 	strbuf_addbuf(&src, &t->path);
 	strbuf_addstr(&dst, repo_get_object_directory(t->repo));
 
-	ret = migrate_paths(t, &src, &dst, 0);
+	if (temp_dir && merge_loose_mappings(t)) {
+		struct odb_source_files *files =
+			odb_source_files_downcast(t->repo->objects->source);
+
+		/* Install mappings before their loose objects can be observed. */
+		ret = loose_object_map_merge(files->dirs->loose, temp_dir->loose);
+	}
+
+	odb_files_dir_free(temp_dir);
+	if (!ret)
+		ret = migrate_paths(t, &src, &dst, 0);
 
 	strbuf_release(&src);
 	strbuf_release(&dst);

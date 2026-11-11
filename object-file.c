@@ -22,6 +22,7 @@
 #include "object-file.h"
 #include "odb.h"
 #include "odb/chunked.h"
+#include "odb/source-files.h"
 #include "odb/streaming.h"
 #include "odb/transaction.h"
 #include "pack.h"
@@ -497,6 +498,7 @@ struct odb_transaction_files {
 	enum odb_transaction_flags flags;
 
 	struct tmp_objdir *objdir;
+	bool needs_batch_fsync;
 	struct transaction_packfile packfile;
 	const char *prefix;
 
@@ -537,6 +539,8 @@ void odb_transaction_files_fsync(struct odb_transaction *base,
 		fsync_or_die(fd, filename);
 		return;
 	}
+
+	transaction->needs_batch_fsync = true;
 
 	/*
 	 * If we have an active ODB transaction, we issue a call that
@@ -897,6 +901,9 @@ static int odb_transaction_files_write_object_stream(struct odb_transaction *bas
 	unsigned header_len;
 	struct hashfile_checkpoint checkpoint;
 	struct pack_idx_entry *idx;
+
+	if (odb_source_files_should_chunk(base->source->odb->repo, stream->type, stream->size))
+		return odb_source_write_object_stream(base->source, stream, result_oid);
 
 	header_len = format_object_header((char *)obuf, sizeof(obuf),
 					  stream->type, stream->size);
@@ -1370,24 +1377,22 @@ static int odb_transaction_files_commit(struct odb_transaction *base)
 	flush_packfile_transaction(transaction);
 
 	if (transaction->objdir) {
-		struct strbuf temp_path = STRBUF_INIT;
-		struct tempfile *temp;
+		if (transaction->needs_batch_fsync ||
+		    (transaction->flags & ODB_TRANSACTION_RECEIVE)) {
+			struct strbuf temp_path = STRBUF_INIT;
+			struct tempfile *temp;
 
-		/*
-		 * Issue a full hardware flush against a temporary file to ensure
-		 * that all objects are durable before any renames occur. The code in
-		 * odb_transaction_files_fsync has already issued a writeout
-		 * request, but it has not flushed any writeback cache in the storage
-		 * hardware or any filesystem logs. This fsync call acts as a barrier
-		 * to ensure that the data in each new object file is durable before
-		 * the final name is visible.
-		 */
-		strbuf_addf(&temp_path, "%s/bulk_fsync_XXXXXX",
-			    repo_get_object_directory(transaction->base.source->odb->repo));
-		temp = xmks_tempfile(temp_path.buf);
-		fsync_or_die(get_tempfile_fd(temp), get_tempfile_path(temp));
-		delete_tempfile(&temp);
-		strbuf_release(&temp_path);
+			/*
+			 * Flush the filesystem after a batch writeout or a
+			 * receive into quarantine and before publishing objects.
+			 */
+			strbuf_addf(&temp_path, "%s/bulk_fsync_XXXXXX",
+				    repo_get_object_directory(base->source->odb->repo));
+			temp = xmks_tempfile(temp_path.buf);
+			fsync_or_die(get_tempfile_fd(temp), get_tempfile_path(temp));
+			delete_tempfile(&temp);
+			strbuf_release(&temp_path);
+		}
 
 		if (write_pack_lockfiles(transaction))
 			return error(_("unable to lock packfiles"));

@@ -8,9 +8,12 @@
 #include "lockfile.h"
 #include "object-file.h"
 #include "odb.h"
+#include "odb/chunked.h"
+#include "odb/fastcdc.h"
 #include "odb/source.h"
 #include "odb/source-files.h"
 #include "odb/source-loose.h"
+#include "odb/streaming.h"
 #include "pack-objects.h"
 #include "packfile.h"
 #include "path.h"
@@ -597,6 +600,30 @@ static int odb_source_files_freshen_object(struct odb_source *source,
 	return 0;
 }
 
+bool odb_source_files_should_chunk(struct repository *repo, enum object_type type,
+				   size_t size)
+{
+	return repo->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2 &&
+		type == OBJ_BLOB && size > ODB_FASTCDC_MAX;
+}
+
+struct buffer_read_stream {
+	struct odb_stream base;
+	const char *buf;
+	size_t offset;
+};
+
+static ssize_t read_object_buffer(struct odb_stream *stream, char *buf, size_t len)
+{
+	struct buffer_read_stream *input =
+		container_of(stream, struct buffer_read_stream, base);
+
+	len = MIN(len, stream->size - input->offset);
+	memcpy(buf, input->buf + input->offset, len);
+	input->offset += len;
+	return len;
+}
+
 static int odb_source_files_write_object(struct odb_source *source,
 					 const void *buf, size_t len,
 					 enum object_type type,
@@ -606,6 +633,24 @@ static int odb_source_files_write_object(struct odb_source *source,
 					 enum odb_write_object_flags flags)
 {
 	struct odb_source_files *files = odb_source_files_downcast(source);
+
+	if (odb_source_files_should_chunk(source->odb->repo, type, len)) {
+		struct buffer_read_stream input = {
+			.base = {
+				.read = read_object_buffer,
+				.type = type,
+				.size = len,
+			},
+			.buf = buf,
+		};
+
+		if (batch_fsync_enabled(FSYNC_COMPONENT_LOOSE_OBJECT) &&
+		    odb_transaction_files_prepare(source->odb->transaction))
+			return -1;
+		return odb_chunked_write(files->dirs->loose, &input.base, oid,
+					 compat_oid, mtime, flags, NULL);
+	}
+
 	return odb_source_write_object(&files->dirs->loose->base, buf, len, type,
 				       oid, compat_oid, mtime, flags);
 }
@@ -615,6 +660,16 @@ static int odb_source_files_write_object_stream(struct odb_source *source,
 						struct object_id *oid)
 {
 	struct odb_source_files *files = odb_source_files_downcast(source);
+
+	if (odb_source_files_should_chunk(source->odb->repo, stream->type, stream->size)) {
+		if (!source->odb->transaction)
+			return error(_("streaming a chunked blob requires an object transaction"));
+		if (odb_transaction_files_prepare(source->odb->transaction))
+			return -1;
+		return odb_chunked_write(files->dirs->loose, stream, NULL, NULL,
+					 NULL, 0, oid);
+	}
+
 	return odb_source_write_object_stream(&files->dirs->loose->base, stream, oid);
 }
 

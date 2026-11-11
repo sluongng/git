@@ -295,6 +295,223 @@ test_expect_success 'do not publish a manifest when the expected blob ID differs
 	test_path_is_missing "chunked-mismatch/.git/objects/$(test_oid_to_path "$writer_oid")"
 '
 
+test_expect_success 'filev2 keeps blobs at the chunking cutoff loose' '
+	git init --object-storage-format=filev2 filev2 &&
+	test-tool genrandom cutoff 4m >cutoff &&
+	git hash-object cutoff >expect &&
+	git -C filev2 hash-object -w --stdin <cutoff >actual &&
+	test_cmp expect actual &&
+	git -C filev2 cat-file blob "$(cat expect)" >cutoff.actual &&
+	test_cmp_bin cutoff cutoff.actual &&
+	find filev2/.git/objects -type f -path "*/chunks/*" >chunks &&
+	test_must_be_empty chunks
+'
+
+test_expect_success 'filev2 streams large blobs under their canonical object ID' '
+	test_filev2_blob >filev2/original &&
+	git hash-object filev2/original >expect &&
+	cat filev2/original | git -C filev2 hash-object -w --stdin >actual &&
+	test_cmp expect actual &&
+	original_oid=$(cat expect) &&
+	git -C filev2 cat-file blob "$original_oid" >original.actual &&
+	test_cmp_bin filev2/original original.actual &&
+	printf "blob\n10485761\n" >expect &&
+	{
+		git -C filev2 cat-file -t "$original_oid" &&
+		git -C filev2 cat-file -s "$original_oid"
+	} >actual &&
+	test_cmp expect actual &&
+
+	manifest=filev2/.git/objects/$(test_oid_to_path "$original_oid") &&
+	test-tool hexdump <"$manifest" >manifest.hex &&
+	find filev2/.git/objects/chunks -type f >original.chunks &&
+	test_line_count = 9 original.chunks
+'
+
+test_expect_success 'filev2 reuses chunks across two versions of a blob' '
+	{
+		cat filev2/original &&
+		printf "appended data\n"
+	} >filev2/modified &&
+	git hash-object filev2/modified >expect &&
+	GIT_TEST_FSYNC=true GIT_TRACE2_EVENT="$(pwd)/filev2-trace" \
+		git -C filev2 -c core.bigFileThreshold=1m \
+		-c core.fsync=none -c core.fsyncMethod=fsync add modified &&
+	test_grep ! "\"category\":\"fsync\"" filev2-trace &&
+	git -C filev2 rev-parse :modified >actual &&
+	test_cmp expect actual &&
+	modified_oid=$(cat expect) &&
+	test "$original_oid" != "$modified_oid" &&
+	git -C filev2 cat-file blob "$modified_oid" >modified.actual &&
+	test_cmp_bin filev2/modified modified.actual &&
+
+	manifest=filev2/.git/objects/$(test_oid_to_path "$modified_oid") &&
+	manifest_size=$(test_file_size "$manifest") &&
+	modified_chunks=$(((manifest_size - 48) / 36)) &&
+	find filev2/.git/objects/chunks -type f >combined.chunks &&
+	test_line_count -gt 9 combined.chunks &&
+	test_line_count -lt "$((9 + modified_chunks))" combined.chunks &&
+	git -C filev2 fsck --no-dangling
+'
+
+filev2_hardware_flushes () {
+	sed -n "/\"category\":\"fsync\",\"name\":\"hardware-flush\"/s/.*\"count\":\([0-9][0-9]*\)}$/\1/p" "$1"
+}
+
+test_expect_success 'filev2 syncs reused chunks before publishing a new blob' '
+	{
+		cat filev2/original &&
+		printf "chunk fsync fixture\n"
+	} >filev2/with-fsync &&
+	GIT_TEST_FSYNC=true GIT_TRACE2_EVENT="$(pwd)/reuse-trace" \
+		git -C filev2 -c core.fsync=loose-object -c core.fsyncMethod=fsync \
+		hash-object -w with-fsync >fsynced-oid &&
+	count=$(filev2_hardware_flushes reuse-trace) &&
+	test "$count" -gt 2 &&
+	git -C filev2 cat-file blob "$(cat fsynced-oid)" >actual &&
+	test_cmp_bin filev2/with-fsync actual
+'
+
+test_expect_success 'filev2 batches fsync for repeated and shared chunks' '
+	test-tool genzeros $((16 * 1024 * 1024)) >filev2/batch-original &&
+	git -C filev2 -c core.fsync=none hash-object -w batch-original &&
+	{
+		cat filev2/batch-original &&
+		printf "batch fsync fixture\n"
+	} >filev2/batch-modified &&
+	GIT_TEST_FSYNC=true GIT_TRACE2_EVENT="$(pwd)/batch-trace" \
+		git -C filev2 -c core.fsync=loose-object -c core.fsyncMethod=batch \
+		add batch-modified 2>batch.err &&
+	if ! grep "core.fsyncMethod = batch is unsupported" batch.err
+	then
+		count=$(filev2_hardware_flushes batch-trace) &&
+		test "$count" -eq 1
+	fi &&
+	git -C filev2 cat-file blob :batch-modified >actual &&
+	test_cmp_bin filev2/batch-modified actual
+'
+
+test_expect_success POSIXPERM,SANITY 'filev2 reuses a blob in a read-only object directory' '
+	chmod u-w filev2/.git/objects &&
+	test_when_finished "chmod u+w filev2/.git/objects" &&
+	git -C filev2 hash-object -w original >actual &&
+	echo "$original_oid" >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success POSIXPERM,SANITY 'filev2 reuses chunks in a read-only shard' '
+	prefix=$(awk "{ print \$21 }" <manifest.hex) &&
+	shard=filev2/.git/objects/chunks/$prefix &&
+	chmod u-w "$shard" &&
+	test_when_finished "chmod u+w \"$shard\"" &&
+	{
+		cat filev2/original &&
+		printf "readonly shard change\n"
+	} >filev2/readonly-shard &&
+	git -C filev2 -c core.bigFileThreshold=1m add readonly-shard &&
+	git -C filev2 cat-file blob :readonly-shard >actual &&
+	test_cmp_bin filev2/readonly-shard actual
+'
+
+test_expect_success 'filev2 repairs a corrupt shared chunk in a direct write' '
+	digest=$(awk "{ for (i = 21; i <= 52; i++) printf \"%s\", \$i }" <manifest.hex) &&
+	chunk=filev2/.git/objects/chunks/$(test_oid_to_path "$digest") &&
+	mv "$chunk" good-chunk &&
+	test_when_finished "mv -f good-chunk \"$chunk\"" &&
+	printf "corrupt chunk" >"$chunk" &&
+	test_must_fail git -C filev2 cat-file blob "$original_oid" >out 2>err &&
+	test_grep "corrupt blob chunk" err &&
+	{
+		cat filev2/original &&
+		printf "another version\n"
+	} >filev2/another &&
+	another_oid=$(git hash-object filev2/another) &&
+	cat filev2/another | git -C filev2 hash-object -w --stdin >actual-oid 2>err &&
+	test_must_be_empty err &&
+	echo "$another_oid" >expect &&
+	test_cmp expect actual-oid &&
+	git -C filev2 cat-file blob "$another_oid" >another.actual &&
+	test_cmp_bin filev2/another another.actual &&
+	git -C filev2 fsck --no-dangling
+'
+
+test_expect_success 'filev2 fsck checks large valid attributes' '
+	git init --object-storage-format=filev2 filev2-attrs &&
+	awk "BEGIN { for (i = 0; i < 218454; i++) print \"# filev2 fsck fixture 1\" }" >attrs &&
+	attrs_oid=$(git -C filev2-attrs hash-object -w --stdin <attrs) &&
+
+	# The tree is in an earlier loose shard than the blob in both hash formats.
+	printf "100644 blob %s\t.gitattributes\n" "$attrs_oid" >attrs-tree &&
+	git -C filev2-attrs mktree <attrs-tree &&
+	git -C filev2-attrs fsck --no-dangling
+'
+
+test_expect_success RUST 'filev2 keeps compatibility hashes after a pack flush' '
+	git init --object-format=sha256 --object-storage-format=filev2 filev2-compat &&
+	git init --object-format=sha1 filev2-sha1 &&
+	git -C filev2-compat config extensions.compatObjectFormat sha1 &&
+	echo small >filev2-compat/small &&
+	test-tool genrandom medium-a 2m >filev2-compat/a-medium &&
+	test-tool genrandom medium-b 2m >filev2-compat/b-medium &&
+	cp filev2/original filev2-compat/z-large &&
+	git -C filev2-compat add small &&
+
+	# Flush a conventional pack before publishing the chunked blob.
+	git -C filev2-compat -c core.bigFileThreshold=1m -c pack.packSizeLimit=1m \
+		add a-medium b-medium z-large &&
+	for path in small z-large
+	do
+		git -C filev2-sha1 hash-object "../filev2-compat/$path" >expect &&
+		git -C filev2-compat rev-parse --output-object-format=sha1 ":$path" >actual &&
+		test_cmp expect actual || return 1
+	done
+'
+
+test_expect_success RUST,POSIXPERM,SANITY 'filev2 waits for compatibility mappings before publishing' '
+	git init --object-format=sha256 --object-storage-format=filev2 filev2-map &&
+	git -C filev2-map config extensions.compatObjectFormat sha1 &&
+	echo small >filev2-map/small &&
+	git -C filev2-map add small &&
+	cp filev2/original filev2-map/large &&
+	oid=$(git -C filev2-map hash-object large) &&
+	map=filev2-map/.git/objects/loose-object-idx &&
+	manifest=filev2-map/.git/objects/$(test_oid_to_path "$oid") &&
+	chmod a-w "$map" &&
+	test_when_finished "chmod u+w \"$map\"" &&
+	test_must_fail git -C filev2-map -c core.bigFileThreshold=1m add large 2>err &&
+	test_grep "failed to write loose object index" err &&
+	test_path_is_missing "$manifest" &&
+	chmod u+w "$map" &&
+	git -C filev2-map -c core.bigFileThreshold=1m add large &&
+	git -C filev2-sha1 hash-object ../filev2-map/large >expect &&
+	git -C filev2-map rev-parse --output-object-format=sha1 :large >actual &&
+	test_cmp expect actual &&
+	chmod a-w "$map" &&
+	git -C filev2-map -c core.bigFileThreshold=1m -c core.fsync=loose-object \
+		hash-object -w large >actual &&
+	echo "$oid" >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'filev2 preserves the ref update restriction in quarantine' '
+	git init --object-storage-format=filev2 filev2-quarantine &&
+	test_commit -C filev2-quarantine initial tracked small &&
+	git -C filev2-quarantine rev-parse HEAD >expect &&
+	mkdir quarantine-odb &&
+	test-tool genrandom filev2-quarantine 5m >filev2-quarantine/tracked &&
+	test_must_fail env GIT_OBJECT_DIRECTORY="$(pwd)/quarantine-odb" \
+		GIT_QUARANTINE_PATH="$(pwd)/quarantine-odb" \
+		GIT_ALTERNATE_OBJECT_DIRECTORIES="$(pwd)/filev2-quarantine/.git/objects" \
+		git -C filev2-quarantine -c core.bigFileThreshold=1m -c core.fsync=none \
+		commit -am quarantined 2>err &&
+	test_grep "ref updates forbidden inside quarantine" err &&
+	git -C filev2-quarantine rev-parse HEAD >actual &&
+	test_cmp expect actual &&
+	git -C filev2-quarantine -c core.bigFileThreshold=1m commit -am ordinary &&
+	git -C filev2-quarantine cat-file blob HEAD:tracked >actual &&
+	test_cmp_bin filev2-quarantine/tracked actual
+'
+
 test_expect_success EXPENSIVE,SIZE_T_IS_64BIT \
 		'files over 4GB hash literally' '
 	test-tool genzeros $((5*1024*1024*1024)) >big &&

@@ -35,6 +35,9 @@ struct odb_files_dir *odb_files_dir_new(struct object_database *odb,
 					const char *path, bool local);
 void odb_files_dir_free(struct odb_files_dir *dir);
 
+bool odb_source_files_should_chunk(struct repository *repo, enum object_type type,
+				   size_t size);
+
 /*
  * The files object database source uses a combination of loose objects and
  * packfiles. It is the default backend used by Git to store objects.

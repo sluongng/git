@@ -30,6 +30,7 @@
 static const char * const object_storage_name_by_format[] = {
 	[OBJECT_STORAGE_FORMAT_UNKNOWN] = "unknown",
 	[OBJECT_STORAGE_FORMAT_FILES] = "files",
+	[OBJECT_STORAGE_FORMAT_FILEV2] = "filev2",
 };
 
 enum object_storage_format object_storage_format_by_name(const char *name)

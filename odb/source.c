@@ -32,6 +32,7 @@ struct odb_source *odb_source_new(struct object_database *odb,
 
 	switch (format) {
 	case OBJECT_STORAGE_FORMAT_FILES:
+	case OBJECT_STORAGE_FORMAT_FILEV2:
 		source = &odb_source_files_new(odb, payload, flags)->base;
 		break;
 	default:

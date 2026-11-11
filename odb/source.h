@@ -221,6 +221,8 @@ struct odb_source {
 	 * This callback is expected to persist the given object stream into
 	 * the object source.
 	 *
+	 * The filev2 format requires an active transaction for chunked writes.
+	 *
 	 * The resulting object ID shall be written into the out pointer. The
 	 * callback is expected to return 0 on success, a negative error code
 	 * otherwise.

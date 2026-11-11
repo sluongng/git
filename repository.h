@@ -25,6 +25,7 @@ enum ref_storage_format {
 enum object_storage_format {
 	OBJECT_STORAGE_FORMAT_UNKNOWN,
 	OBJECT_STORAGE_FORMAT_FILES,
+	OBJECT_STORAGE_FORMAT_FILEV2,
 };
 
 #ifdef WITH_BREAKING_CHANGES /* Git 3.0 */

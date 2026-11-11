@@ -199,6 +199,30 @@ int repo_add_loose_object_map(struct odb_source_loose *loose,
 	return 0;
 }
 
+int loose_object_map_merge(struct odb_source_loose *destination,
+			   struct odb_source_loose *source)
+{
+	const struct git_hash_algo *algo = source->base.odb->repo->hash_algo;
+	struct object_id oid, *compat_oid;
+	bool have_mapping = false;
+
+	/* Child processes may have written mappings into the temporary ODB. */
+	if (loose_object_map_load(source) < 0)
+		return error(_("unable to read temporary loose object mappings"));
+
+	kh_foreach(source->map->to_compat, oid, compat_oid, {
+		if (oideq(&oid, algo->empty_tree) ||
+		    oideq(&oid, algo->empty_blob) ||
+		    oideq(&oid, algo->null_oid))
+			continue;
+
+		have_mapping = true;
+		if (repo_add_loose_object_map(destination, &oid, compat_oid))
+			return -1;
+	});
+	return have_mapping ? loose_object_map_fsync(destination) : 0;
+}
+
 int loose_object_map_fsync(struct odb_source_loose *loose)
 {
 	char *path;

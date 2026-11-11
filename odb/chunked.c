@@ -149,6 +149,48 @@ static int harden_existing_chunk(const char *path)
 	return ret;
 }
 
+int odb_chunked_install_file(struct repository *repo, const char *src,
+			     const char *dst)
+{
+	const char *leaf = strrchr(src, '/');
+	char hex[GIT_SHA256_HEXSZ + 1];
+	unsigned char digest[GIT_SHA256_RAWSZ], *data;
+	int ret = -1;
+
+	if (!leaf || leaf - src < 3 || leaf[-3] != '/' ||
+	    strlen(leaf + 1) != GIT_SHA256_HEXSZ - 2)
+		return error(_("invalid staged blob chunk path '%s'"), src);
+	memcpy(hex, leaf - 2, 2);
+	memcpy(hex + 2, leaf + 1, GIT_SHA256_HEXSZ - 1);
+	if (get_hash_hex_algop(hex, digest, &hash_algos[GIT_HASH_SHA256]))
+		return error(_("invalid staged blob chunk path '%s'"), src);
+
+	data = xmalloc(ODB_FASTCDC_MAX);
+	/*
+	 * Batch mode has already hardened the staged copy. Publish it without
+	 * flushing each existing destination. If replacement fails, try to
+	 * sync and reuse a healthy destination instead.
+	 */
+	if (batch_fsync_enabled(FSYNC_COMPONENT_LOOSE_OBJECT) &&
+	    !read_chunk_file(src, data, 0, digest, true) &&
+	    !rename(src, dst)) {
+		ret = adjust_shared_perm(repo, dst);
+		if (ret)
+			error(_("unable to set permission to '%s'"), dst);
+		goto out;
+	}
+
+	/* A healthy destination is already usable by every referring manifest. */
+	if (!read_chunk_file(dst, data, 0, digest, true) &&
+	    !harden_existing_chunk(dst))
+		ret = unlink_or_warn(src);
+	else if (!read_chunk_file(src, data, 0, digest, false))
+		ret = finalize_object_file_flags(repo, src, dst, FOF_REPLACE_EXISTING);
+out:
+	free(data);
+	return ret;
+}
+
 static ssize_t read_chunked_stream(struct odb_stream *base, char *buf, size_t len)
 {
 	struct chunked_read_stream *stream = container_of(base,

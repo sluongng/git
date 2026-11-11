@@ -4,3 +4,16 @@ The optional payload can be passed to specify an alternative filesystem path
 where the objects will be stored. Relative paths are resolved relative to the
 `$GIT_COMMON_DIR`. Defaults to `$GIT_COMMON_DIR/objects` when no payload is
 provided. The payload is ignored when `GIT_OBJECT_DIRECTORY` is set.
+
+`filev2[://<path>]`;; experimental. Uses the same loose objects and packs
+as `files`, with content-defined chunking for newly written loose blobs
+larger than 4 MiB. This format requires a Git version that supports it.
++
+Serving raw loose objects over dumb HTTP requires the `files` format.
++
+Repacking can replace chunked blobs with ordinary packed objects.
+Prune removes expired loose manifests and retains their chunks.
+Failed writes can leave unreferenced chunks in the object directory.
+Streamed and batch writes can temporarily stage copies of shared chunks.
++
+Per-object disk usage reports the size of the manifest for a chunked blob.

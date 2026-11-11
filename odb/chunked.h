@@ -21,6 +21,9 @@ int odb_chunked_open(struct odb_stream **out, const char *object_dir,
 
 void *odb_chunked_read_contents(struct odb_stream *stream);
 
+int odb_chunked_install_file(struct repository *repo, const char *src,
+			     const char *dst);
+
 /*
  * Write a chunked blob to a loose source. For a stream with no expected
  * object ID, the loose source must be a private staging directory so any
