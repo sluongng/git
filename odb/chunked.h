@@ -10,8 +10,29 @@ struct odb_source_loose;
 struct odb_stream;
 struct repository;
 
+struct odb_blob_chunk {
+	uint32_t len;
+	unsigned char digest[GIT_SHA256_RAWSZ];
+};
+
+struct odb_blob_manifest {
+	size_t size;
+	size_t nr;
+	struct odb_blob_chunk *chunks;
+};
+
 bool odb_chunked_is_manifest(const void *data, size_t len);
 bool odb_chunked_is_manifest_file(const char *path);
+
+/* Read a native manifest from the primary object directory. */
+int odb_chunked_read_manifest(struct repository *repo, const struct object_id *oid,
+			      size_t max_chunks, struct odb_blob_manifest *out);
+
+/* Verify a chunk and optionally return its zlib stream. */
+int odb_chunked_read_chunk(const char *object_dir, const struct odb_blob_chunk *chunk,
+			   void *data, struct strbuf *compressed);
+int odb_chunked_inflate(const struct odb_blob_chunk *chunk,
+			const void *compressed, size_t compressed_len, void *data);
 
 /*
  * Open the blob represented by a manifest. The stream owns a copy of the

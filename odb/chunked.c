@@ -7,6 +7,7 @@
 #include "object-file.h"
 #include "odb/chunked.h"
 #include "odb/fastcdc.h"
+#include "odb/source-files.h"
 #include "odb/source-loose.h"
 #include "odb/streaming.h"
 #include "path.h"
@@ -66,17 +67,23 @@ bool odb_chunked_is_manifest(const void *data, size_t len)
 	return len >= prefix_len && !memcmp(data, manifest_magic, prefix_len);
 }
 
+static int open_chunked_file(const char *path)
+{
+	int flags = O_RDONLY;
+
+#ifdef O_NONBLOCK
+	flags |= O_NONBLOCK;
+#endif
+	return git_open_cloexec(path, flags);
+}
+
 bool odb_chunked_is_manifest_file(const char *path)
 {
 	unsigned char prefix[sizeof(manifest_magic) - 1];
 	struct stat st;
 	bool is_manifest = false;
-	int fd, flags = O_RDONLY;
+	int fd = open_chunked_file(path);
 
-#ifdef O_NONBLOCK
-	flags |= O_NONBLOCK;
-#endif
-	fd = git_open_cloexec(path, flags);
 	if (fd < 0)
 		return false;
 	if (!fstat(fd, &st) && S_ISREG(st.st_mode) &&
@@ -86,17 +93,50 @@ bool odb_chunked_is_manifest_file(const char *path)
 	return is_manifest;
 }
 
-static int read_chunk_file(const char *path, unsigned char *data, size_t len,
-			   const unsigned char *digest, bool quiet)
+static int inflate_chunk(const void *compressed, size_t compressed_len,
+			 unsigned char *data, size_t len,
+			 const unsigned char *digest)
 {
 	unsigned char actual_digest[GIT_SHA256_RAWSZ];
-	unsigned char *compressed = NULL;
 	struct z_stream_s z = { 0 };
-	struct stat st;
-	int fd, ret = -1;
 	int status;
 
-	fd = git_open(path);
+	if (!compressed_len || compressed_len > 2 * ODB_FASTCDC_MAX ||
+	    len > ODB_FASTCDC_MAX)
+		return -1;
+
+	z.next_in = (void *)compressed;
+	z.avail_in = compressed_len;
+	z.next_out = data;
+	z.avail_out = len ? len : ODB_FASTCDC_MAX;
+	if (inflateInit(&z) != Z_OK)
+		return -1;
+	status = inflate(&z, Z_FINISH);
+	inflateEnd(&z);
+	if (status != Z_STREAM_END || z.avail_in || !z.total_out ||
+	    (len && z.total_out != len))
+		return -1;
+
+	hash_sha256(data, z.total_out, actual_digest);
+	return memcmp(digest, actual_digest, sizeof(actual_digest)) ? -1 : 0;
+}
+
+int odb_chunked_inflate(const struct odb_blob_chunk *chunk,
+			const void *compressed, size_t compressed_len, void *data)
+{
+	return inflate_chunk(compressed, compressed_len, data, chunk->len,
+			     chunk->digest);
+}
+
+static int read_chunk_file(const char *path, unsigned char *data, size_t len,
+			   const unsigned char *digest, bool quiet,
+			   struct strbuf *encoded)
+{
+	struct strbuf compressed = STRBUF_INIT;
+	struct stat st;
+	int fd, ret = -1;
+
+	fd = open_chunked_file(path);
 	if (fd < 0)
 		return quiet ? -1 : error_errno(_("unable to open blob chunk '%s'"), path);
 	if (fstat(fd, &st) < 0) {
@@ -108,26 +148,15 @@ static int read_chunk_file(const char *path, unsigned char *data, size_t len,
 	if (!S_ISREG(st.st_mode) || st.st_size <= 0 ||
 	    st.st_size > 2 * ODB_FASTCDC_MAX)
 		goto corrupt;
-	ALLOC_ARRAY(compressed, st.st_size);
-	if (read_in_full(fd, compressed, st.st_size) != st.st_size)
+	strbuf_grow(&compressed, st.st_size);
+	if (read_in_full(fd, compressed.buf, st.st_size) != st.st_size)
 		goto corrupt;
+	strbuf_setlen(&compressed, st.st_size);
 
-	z.next_in = compressed;
-	z.avail_in = st.st_size;
-	z.next_out = data;
-	z.avail_out = len ? len : ODB_FASTCDC_MAX;
-	if (inflateInit(&z) != Z_OK)
+	if (inflate_chunk(compressed.buf, compressed.len, data, len, digest))
 		goto corrupt;
-	status = inflate(&z, Z_FINISH);
-	inflateEnd(&z);
-	if (status != Z_STREAM_END || z.avail_in || !z.total_out ||
-	    (len && z.total_out != len))
-		goto corrupt;
-
-	hash_sha256(data, z.total_out, actual_digest);
-	if (memcmp(digest, actual_digest, sizeof(actual_digest)))
-		goto corrupt;
-
+	if (encoded)
+		strbuf_swap(encoded, &compressed);
 	ret = 0;
 	goto out;
 
@@ -136,7 +165,20 @@ corrupt:
 		error(_("corrupt blob chunk '%s'"), path);
 out:
 	close(fd);
-	free(compressed);
+	strbuf_release(&compressed);
+	return ret;
+}
+
+int odb_chunked_read_chunk(const char *object_dir, const struct odb_blob_chunk *chunk,
+			   void *data, struct strbuf *compressed)
+{
+	struct strbuf path = STRBUF_INIT;
+	int ret;
+
+	chunk_path(&path, object_dir, chunk->digest);
+	ret = read_chunk_file(path.buf, data, chunk->len, chunk->digest, true,
+			      compressed);
+	strbuf_release(&path);
 	return ret;
 }
 
@@ -192,7 +234,7 @@ int odb_chunked_install_file(struct repository *repo, const char *src,
 	 * sync and reuse a healthy destination instead.
 	 */
 	if (batch_fsync_enabled(FSYNC_COMPONENT_LOOSE_OBJECT) &&
-	    !read_chunk_file(src, data, 0, digest, true) &&
+	    !read_chunk_file(src, data, 0, digest, true, NULL) &&
 	    !rename(src, dst)) {
 		ret = adjust_shared_perm(repo, dst);
 		if (ret)
@@ -201,10 +243,10 @@ int odb_chunked_install_file(struct repository *repo, const char *src,
 	}
 
 	/* A healthy destination is already usable by every referring manifest. */
-	if (!read_chunk_file(dst, data, 0, digest, true) &&
+	if (!read_chunk_file(dst, data, 0, digest, true, NULL) &&
 	    !harden_existing_chunk(dst))
 		ret = unlink_or_warn(src);
-	else if (!read_chunk_file(src, data, 0, digest, false))
+	else if (!read_chunk_file(src, data, 0, digest, false, NULL))
 		ret = finalize_object_file_flags(repo, src, dst, FOF_REPLACE_EXISTING);
 out:
 	free(data);
@@ -255,7 +297,7 @@ static ssize_t read_chunked_stream(struct odb_stream *base, char *buf, size_t le
 			digest = entry + sizeof(uint32_t);
 			chunk_path(&stream->path, stream->object_dir, digest);
 			ALLOC_GROW(stream->chunk, chunk_len, stream->chunk_alloc);
-			if (read_chunk_file(stream->path.buf, stream->chunk, chunk_len, digest, false) < 0)
+			if (read_chunk_file(stream->path.buf, stream->chunk, chunk_len, digest, false, NULL) < 0)
 				return -1;
 			stream->chunk_len = chunk_len;
 			stream->chunk_offset = 0;
@@ -282,30 +324,30 @@ static int close_chunked_stream(struct odb_stream *base)
 	return 0;
 }
 
-int odb_chunked_open(struct odb_stream **out, const char *object_dir,
-		     const void *manifest, size_t len)
+static int parse_manifest(const void *manifest, size_t len,
+			  size_t *size_out, const unsigned char **entries_out,
+			  size_t *entries_len_out, bool quiet)
 {
 	const unsigned char *data = manifest, *entries;
-	struct chunked_read_stream *stream;
 	uint64_t size, remaining;
 	size_t entries_len;
 	unsigned char checksum[GIT_SHA256_RAWSZ];
 
 	if (len < MANIFEST_HEADER_SIZE + GIT_SHA256_RAWSZ ||
 	    memcmp(data, manifest_magic, sizeof(manifest_magic)))
-		return error(_("invalid blob manifest header"));
+		return quiet ? -1 : error(_("invalid blob manifest header"));
 
 	len -= GIT_SHA256_RAWSZ;
 	hash_sha256(data, len, checksum);
 	if (memcmp(checksum, data + len, GIT_SHA256_RAWSZ))
-		return error(_("invalid blob manifest checksum"));
+		return quiet ? -1 : error(_("invalid blob manifest checksum"));
 
 	size = get_be64(data + sizeof(manifest_magic));
 	entries = data + MANIFEST_HEADER_SIZE;
 	entries_len = len - MANIFEST_HEADER_SIZE;
 	if (size > SIZE_MAX || size <= ODB_FASTCDC_MAX || !entries_len ||
 	    entries_len % MANIFEST_ENTRY_SIZE)
-		return error(_("invalid blob manifest size"));
+		return quiet ? -1 : error(_("invalid blob manifest size"));
 
 	remaining = size;
 	for (size_t offset = 0; offset < entries_len; offset += MANIFEST_ENTRY_SIZE) {
@@ -315,11 +357,70 @@ int odb_chunked_open(struct odb_stream **out, const char *object_dir,
 		    chunk_len > remaining ||
 		    (offset + MANIFEST_ENTRY_SIZE < entries_len &&
 		     chunk_len < ODB_FASTCDC_MIN))
-			return error(_("invalid chunk length in blob manifest"));
+			return quiet ? -1 : error(_("invalid chunk length in blob manifest"));
 		remaining -= chunk_len;
 	}
 	if (remaining)
-		return error(_("blob manifest size does not match its chunks"));
+		return quiet ? -1 : error(_("blob manifest size does not match its chunks"));
+
+	*size_out = size;
+	*entries_out = entries;
+	*entries_len_out = entries_len;
+	return 0;
+}
+
+int odb_chunked_read_manifest(struct repository *repo, const struct object_id *oid,
+			      size_t max_chunks, struct odb_blob_manifest *out)
+{
+	struct odb_source_files *files = odb_source_files_downcast(repo->objects->source);
+	struct strbuf path = STRBUF_INIT;
+	unsigned char *data = NULL;
+	const unsigned char *entries;
+	size_t size, entries_len;
+	struct stat st;
+	int fd, ret = -1;
+
+	odb_loose_path(files->dirs->loose, &path, oid);
+	fd = open_chunked_file(path.buf);
+	if (fd < 0)
+		goto out;
+	if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
+	    st.st_size < (off_t)(MANIFEST_HEADER_SIZE + GIT_SHA256_RAWSZ) ||
+	    (uintmax_t)st.st_size > SIZE_MAX ||
+	    (st.st_size - MANIFEST_HEADER_SIZE - GIT_SHA256_RAWSZ) /
+		MANIFEST_ENTRY_SIZE > max_chunks)
+		goto out;
+
+	ALLOC_ARRAY(data, st.st_size);
+	if (read_in_full(fd, data, st.st_size) != st.st_size ||
+	    parse_manifest(data, st.st_size, &size, &entries, &entries_len, true))
+		goto out;
+	out->size = size;
+	out->nr = entries_len / MANIFEST_ENTRY_SIZE;
+	ALLOC_ARRAY(out->chunks, out->nr);
+	for (size_t i = 0; i < out->nr; i++, entries += MANIFEST_ENTRY_SIZE) {
+		out->chunks[i].len = get_be32(entries);
+		memcpy(out->chunks[i].digest, entries + sizeof(uint32_t), GIT_SHA256_RAWSZ);
+	}
+	ret = 0;
+
+out:
+	if (fd >= 0)
+		close(fd);
+	free(data);
+	strbuf_release(&path);
+	return ret;
+}
+
+int odb_chunked_open(struct odb_stream **out, const char *object_dir,
+		     const void *manifest, size_t len)
+{
+	struct chunked_read_stream *stream;
+	const unsigned char *entries;
+	size_t size, entries_len;
+
+	if (parse_manifest(manifest, len, &size, &entries, &entries_len, false))
+		return -1;
 
 	CALLOC_ARRAY(stream, 1);
 	stream->base.type = OBJ_BLOB;
@@ -424,7 +525,7 @@ static int write_chunk(struct odb_source_loose *loose, struct strbuf *path,
 	if (check_and_freshen_file(path->buf, 0, NULL)) {
 		strbuf_grow(compressed, len);
 		ret = read_chunk_file(path->buf, (unsigned char *)compressed->buf,
-				      len, digest, true);
+				      len, digest, true, NULL);
 		if (!ret && (loose->will_destroy ||
 			     (batch_fsync_enabled(FSYNC_COMPONENT_LOOSE_OBJECT) &&
 			      chunk_write_is_staged(loose)) ||
