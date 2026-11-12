@@ -6,6 +6,7 @@ GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-filev2.sh
 
 unknown_oid=$(printf "test" | git hash-object --stdin)
 
@@ -529,6 +530,159 @@ test_expect_success 'object-info commands rejected when disabled' '
 
 	test_must_fail test-tool serve-v2 --stateless-rpc <in 2>err &&
 	test_grep invalid.command err
+'
+
+test_expect_success 'blob-chunks is advertised by an opted-in filev2 server' '
+	test_filev2_server blob-chunks-server &&
+	test-tool -C blob-chunks-server serve-v2 --advertise-capabilities >out &&
+	test-tool pkt-line unpack <out >actual &&
+	test_grep "^blob-chunks=1$" actual &&
+	git -C blob-chunks-server config uploadpack.allowBlobChunks false &&
+	test-tool -C blob-chunks-server serve-v2 --advertise-capabilities >out &&
+	test-tool pkt-line unpack <out >actual &&
+	test_grep ! "^blob-chunks=" actual &&
+	git -C blob-chunks-server config uploadpack.allowBlobChunks true
+'
+
+test_expect_success 'protected pack-objects hook disables blob-chunks' '
+	blob=$(git -C blob-chunks-server rev-parse main:large) &&
+	test-tool pkt-line pack >hook-request <<-EOF &&
+	command=blob-chunks
+	object-format=$(test_oid algo)
+	0001
+	manifest
+	oid $blob
+	0000
+	EOF
+	test_config -C blob-chunks-server uploadpack.packObjectsHook false &&
+	GIT_PROTOCOL=version=2 git -C blob-chunks-server upload-pack \
+		--stateless-rpc . <hook-request >out &&
+	test-tool pkt-line unpack <out >actual &&
+	test_grep "^manifest $blob " actual &&
+
+	test_config_global uploadpack.packObjectsHook false &&
+	GIT_PROTOCOL=version=2 git -C blob-chunks-server upload-pack \
+		--stateless-rpc --advertise-refs . >out &&
+	test-tool pkt-line unpack <out >actual &&
+	test_grep ! "^blob-chunks=" actual &&
+	test_must_fail env GIT_PROTOCOL=version=2 git -C blob-chunks-server upload-pack \
+		--stateless-rpc . <hook-request >out 2>err &&
+	test_grep "invalid command.*blob-chunks" err
+'
+
+test_expect_success 'blob-chunks manifests honor hidden refs and reachability' '
+	public_blob=$(git -C blob-chunks-server rev-parse main:large) &&
+	git -C blob-chunks-server switch -c secret &&
+	echo hidden >>blob-chunks-server/large &&
+	git -C blob-chunks-server commit -am hidden &&
+	hidden_blob=$(git -C blob-chunks-server rev-parse secret:large) &&
+	echo unreachable >>blob-chunks-server/large &&
+	unreachable_blob=$(git -C blob-chunks-server hash-object -w large) &&
+	git -C blob-chunks-server restore large &&
+	git -C blob-chunks-server switch main &&
+	git -C blob-chunks-server config uploadpack.hideRefs refs/heads/secret &&
+	test-tool pkt-line pack >in <<-EOF &&
+	command=blob-chunks
+	object-format=$(test_oid algo)
+	0001
+	manifest
+	oid $public_blob
+	oid $hidden_blob
+	oid $unreachable_blob
+	0000
+	EOF
+	test-tool -C blob-chunks-server serve-v2 --stateless-rpc <in >out &&
+	test-tool pkt-line unpack <out >actual &&
+	test_grep "^manifest $public_blob 10485761 9$" actual &&
+	test_grep "^unavailable $hidden_blob$" actual &&
+	test_grep "^unavailable $unreachable_blob$" actual
+'
+
+test_expect_success 'blob-chunks authorizes only blobs in the active namespace' '
+	namespace_tip=$(git -C blob-chunks-server commit-tree "secret^{tree}" -m namespaced) &&
+	git -C blob-chunks-server update-ref refs/namespaces/private/refs/heads/main "$namespace_tip" &&
+	GIT_NAMESPACE=private test-tool -C blob-chunks-server serve-v2 --stateless-rpc <in >out &&
+	test-tool pkt-line unpack <out >actual &&
+	test_grep "^unavailable $public_blob$" actual &&
+	test_grep "^manifest $hidden_blob " actual
+'
+
+test_expect_success 'blob-chunks serves a local blob from a partial clone' '
+	test_filev2_server blob-chunks-full &&
+	echo omitted >blob-chunks-full/absent &&
+	git -C blob-chunks-full add absent &&
+	git -C blob-chunks-full commit -m absent &&
+	git clone --no-local --no-checkout --filter=blob:none \
+		--object-storage-format=filev2 blob-chunks-full blob-chunks-partial &&
+	git -C blob-chunks-partial config uploadpack.allowBlobChunks true &&
+	blob=$(git -C blob-chunks-partial hash-object -w --stdin <blob-chunks-full/large) &&
+	missing=$(git -C blob-chunks-partial rev-parse HEAD:absent) &&
+	test_must_fail env GIT_NO_LAZY_FETCH=1 git -C blob-chunks-partial cat-file -e "$missing" &&
+	test-tool pkt-line pack >partial-request <<-EOF &&
+	command=blob-chunks
+	object-format=$(test_oid algo)
+	0001
+	manifest
+	oid $blob
+	oid $missing
+	0000
+	EOF
+	GIT_PROTOCOL=version=2 git -C blob-chunks-partial upload-pack \
+		--stateless-rpc . <partial-request >out &&
+	test-tool pkt-line unpack <out >actual &&
+	test_grep "^manifest $blob " actual &&
+	test_grep "^unavailable $missing$" actual &&
+	test_must_fail env GIT_NO_LAZY_FETCH=1 git -C blob-chunks-partial cat-file -e "$missing"
+'
+
+blob_chunks_manifest_id () {
+	manifest=blob-chunks-server/.git/objects/$(test_oid_to_path "$1") &&
+	size=$(test_file_size "$manifest") &&
+	{
+		printf "blob-chunks-v1\0" &&
+		dd if="$manifest" bs=1 skip=8 count="$((size - 40))" 2>/dev/null
+	} >manifest-id-input &&
+	test-tool sha256 <manifest-id-input
+}
+
+test_expect_success 'blob-chunks data requests recheck reachability and manifest ID' '
+	public_id=$(blob_chunks_manifest_id "$public_blob") &&
+	hidden_id=$(blob_chunks_manifest_id "$hidden_blob") &&
+	test-tool pkt-line pack >in <<-EOF &&
+	command=blob-chunks
+	object-format=$(test_oid algo)
+	0001
+	chunks
+	oid $public_blob $public_id
+	chunk 0
+	oid $hidden_blob $hidden_id
+	chunk 0
+	0000
+	EOF
+	GIT_TRACE_PACKET="$PWD/chunk-data.pkt" \
+		test-tool -C blob-chunks-server serve-v2 --stateless-rpc <in >out &&
+	test_grep "> data $public_blob 0 " chunk-data.pkt &&
+	test_grep "> unavailable $hidden_blob 0$" chunk-data.pkt &&
+	sed "s/$public_id/$hidden_id/" <in >stale &&
+	test-tool -C blob-chunks-server serve-v2 --stateless-rpc <stale >out &&
+	test-tool pkt-line unpack <out >actual &&
+	test_grep "^unavailable $public_blob 0$" actual
+'
+
+test_expect_success 'blob-chunks rejects non-increasing ordinals' '
+	test-tool pkt-line pack >in <<-EOF &&
+	command=blob-chunks
+	object-format=$(test_oid algo)
+	0001
+	chunks
+	oid $public_blob $public_id
+	chunk 1
+	chunk 1
+	0000
+	EOF
+	test_must_fail test-tool -C blob-chunks-server serve-v2 --stateless-rpc <in >out 2>err &&
+	test_grep "invalid blob-chunks request" err &&
+	test_must_be_empty out
 '
 
 test_done

@@ -12,6 +12,9 @@ struct strbuf;
 int upload_pack_advertise(struct repository *r,
 			  struct strbuf *value);
 
+/* Return the caller-owned pack-objects hook from protected configuration. */
+char *upload_pack_get_pack_objects_hook(void);
+
 /* Is this repo trusted for lazy fetching? */
 bool upload_pack_lazy_fetch_trusted(struct repository *r);
 

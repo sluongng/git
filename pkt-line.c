@@ -200,7 +200,7 @@ int packet_write_fmt_gently(int fd, const char *fmt, ...)
 }
 
 static int do_packet_write(const int fd_out, const char *buf, size_t size,
-			   struct strbuf *err)
+			   struct strbuf *err, bool trace)
 {
 	char header[4];
 	size_t packet_size;
@@ -210,7 +210,8 @@ static int do_packet_write(const int fd_out, const char *buf, size_t size,
 		return -1;
 	}
 
-	packet_trace(buf, size, 1);
+	if (trace)
+		packet_trace(buf, size, 1);
 	packet_size = size + 4;
 
 	set_packet_header(header, packet_size);
@@ -233,7 +234,7 @@ static int do_packet_write(const int fd_out, const char *buf, size_t size,
 static int packet_write_gently(const int fd_out, const char *buf, size_t size)
 {
 	struct strbuf err = STRBUF_INIT;
-	if (do_packet_write(fd_out, buf, size, &err)) {
+	if (do_packet_write(fd_out, buf, size, &err, true)) {
 		error("%s", err.buf);
 		strbuf_release(&err);
 		return -1;
@@ -244,8 +245,19 @@ static int packet_write_gently(const int fd_out, const char *buf, size_t size)
 void packet_write(int fd_out, const char *buf, size_t size)
 {
 	struct strbuf err = STRBUF_INIT;
-	if (do_packet_write(fd_out, buf, size, &err))
+	if (do_packet_write(fd_out, buf, size, &err, true))
 		die("%s", err.buf);
+}
+
+int packet_write_payload(int fd_out, const char *buf, size_t size)
+{
+	struct strbuf err = STRBUF_INIT;
+	int ret = do_packet_write(fd_out, buf, size, &err, false);
+
+	if (ret)
+		error("%s", err.buf);
+	strbuf_release(&err);
+	return ret;
 }
 
 void packet_fwrite(FILE *f, const char *buf, size_t size)
@@ -501,7 +513,7 @@ enum packet_read_status packet_read_with_status(int fd, char **src_buffer,
 			      strlen(uri_path_start), redacted, strlen(redacted));
 		packet_trace(tracebuf.buf, tracebuf.len, 0);
 		strbuf_release(&tracebuf);
-	} else {
+	} else if (!(options & PACKET_READ_NO_TRACE)) {
 		packet_trace(buffer, len, 0);
 	}
 

@@ -1402,22 +1402,32 @@ bool upload_pack_lazy_fetch_trusted(struct repository *r)
 	return !!data.trusted;
 }
 
-static int upload_pack_protected_config(const char *var, const char *value,
-					const struct config_context *ctx UNUSED,
-					void *cb_data)
+static int pack_objects_hook_config(const char *var, const char *value,
+				    const struct config_context *ctx UNUSED,
+				    void *cb_data)
 {
-	struct upload_pack_data *data = cb_data;
+	char **hook = cb_data;
 
-	if (!strcmp("uploadpack.packobjectshook", var))
-		return git_config_string(&data->pack_objects_hook, var, value);
+	if (!strcmp("uploadpack.packobjectshook", var)) {
+		FREE_AND_NULL(*hook);
+		return git_config_string(hook, var, value);
+	}
 	return 0;
+}
+
+char *upload_pack_get_pack_objects_hook(void)
+{
+	char *hook = NULL;
+
+	git_protected_config(pack_objects_hook_config, &hook);
+	return hook;
 }
 
 static void get_upload_pack_config(struct repository *r,
 				   struct upload_pack_data *data)
 {
 	repo_config(r, upload_pack_config, data);
-	git_protected_config(upload_pack_protected_config, data);
+	data->pack_objects_hook = upload_pack_get_pack_objects_hook();
 
 	data->allow_sideband_all |= git_env_bool("GIT_TEST_SIDEBAND_ALL", 0);
 }

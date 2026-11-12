@@ -1,4 +1,5 @@
 #include "git-compat-util.h"
+#include "blob-chunks.h"
 #include "repository.h"
 #include "config.h"
 #include "hash.h"
@@ -176,6 +177,11 @@ static struct protocol_capability capabilities[] = {
 		.name = "object-info",
 		.advertise = object_info_advertise,
 		.command = cap_object_info,
+	},
+	{
+		.name = "blob-chunks",
+		.advertise = blob_chunks_advertise,
+		.command = serve_blob_chunks,
 	},
 	{
 		.name = "bundle-uri",

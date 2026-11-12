@@ -899,6 +899,49 @@ for now this "promisor-remote" capability is useful only when the
 server advertises some promisor remotes it already uses to borrow
 objects from.
 
+[[blob-chunks]]
+blob-chunks
+~~~~~~~~~~~
+
+`blob-chunks=1` is an experimental command that lets a client obtain
+large blobs by reusing chunks already present locally. The command uses
+the negotiated Git object format for blob IDs and SHA-256 for chunk
+digests. Ordinary fetch can supply a blob when the command is
+unavailable or declines to serve it.
+
+A request starts with `manifest` or `chunks` and ends with a flush packet.
+In `manifest` mode the client sends one `oid <oid>` line per wanted blob.
+The server responds in request order with `unavailable <oid>` or with
+`manifest <oid> <size> <count>` followed by `<count>` lines of
+`chunk <length> <sha256>`. The lengths describe the successive parts of
+the blob and add up to `<size>`.
+
+The manifest ID is the SHA-256 of `blob-chunks-v1` including the trailing
+NUL byte, the unsigned 64-bit blob size, and, for each chunk in order,
+the unsigned 32-bit length followed by the raw 32-byte digest. Integers
+in the hashed representation are big-endian.
+
+In `chunks` mode the client sends groups starting with
+`oid <oid> <manifest-id>`, each followed by one or more `chunk <ordinal>`
+lines. Ordinals are zero-based and strictly increasing within a group.
+The server authorizes the blob again and checks the manifest ID. For each
+requested chunk it responds with `unavailable <oid> <ordinal>` or with
+`data <oid> <ordinal> <encoded-length>` followed by pkt-lines containing
+that many bytes of zlib-compressed chunk data. Each data pkt-line carries
+as many bytes as its capacity allows. The server ends either response
+with a flush packet.
+
+Each request is stateless. Servers can decline requests that exceed
+their reachability, manifest, or transfer limits. The experimental
+implementation accepts up to 16 blobs and 4096 chunk entries per
+request, with at most 1 GiB of logical blob data and 512 MiB of requested
+uncompressed chunks. The server scans up to 65,536 refs and reads up to
+one million object IDs or five seconds of reachability output per
+request. The server serves manifests from the primary
+`filev2` object directory and checks reachability from visible refs in
+the active namespace. The client verifies each chunk and the canonical
+Git blob ID before publishing the blob.
+
 GIT
 ---
 Part of the linkgit:git[1] suite

@@ -26,6 +26,7 @@ void packet_buf_flush(struct strbuf *buf);
 void packet_buf_delim(struct strbuf *buf);
 void set_packet_header(char *buf, int size);
 void packet_write(int fd_out, const char *buf, size_t size);
+int packet_write_payload(int fd_out, const char *buf, size_t size);
 void packet_buf_write(struct strbuf *buf, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
 int packet_flush_gently(int fd);
 int packet_write_fmt_gently(int fd, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
@@ -85,6 +86,7 @@ void packet_fflush(FILE *f);
 #define PACKET_READ_GENTLE_ON_READ_ERROR (1u<<3)
 #define PACKET_READ_REDACT_URI_PATH      (1u<<4)
 #define PACKET_READ_USE_SIDEBAND         (1u<<5)
+#define PACKET_READ_NO_TRACE             (1u<<6)
 int packet_read(int fd, char *buffer, unsigned size, int options);
 
 /*
