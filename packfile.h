@@ -340,6 +340,14 @@ int has_object_kept_pack(struct repository *r, const struct object_id *oid,
 int is_promisor_object(struct repository *r, const struct object_id *oid);
 
 /*
+ * Move wanted blobs stored in or referenced by trees in local promisor
+ * packs to found. Count packed objects and tree entries against max_entries
+ * (zero for no cap).
+ */
+void collect_local_promisor_blobs(struct repository *r, struct oidset *wanted,
+				 struct oidset *found, size_t max_entries);
+
+/*
  * Expose a function for fuzz testing.
  *
  * load_idx() parses a block of memory as a packfile index and puts the results

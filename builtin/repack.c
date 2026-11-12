@@ -9,6 +9,7 @@
 #include "server-info.h"
 #include "string-list.h"
 #include "midx.h"
+#include "odb/chunked.h"
 #include "packfile.h"
 #include "prune-packed.h"
 #include "promisor-remote.h"
@@ -155,6 +156,15 @@ static int option_parse_write_midx(const struct option *opt, const char *arg,
 	return 0;
 }
 
+static int drop_chunked_blob(const struct object_id *oid, const char *path, void *data)
+{
+	const struct oidset *to_drop = data;
+
+	if (oidset_contains(to_drop, oid) && odb_chunked_is_manifest_file(path))
+		return unlink_or_warn(path);
+	return 0;
+}
+
 int cmd_repack(int argc,
 	       const char **argv,
 	       const char *prefix,
@@ -165,6 +175,7 @@ int cmd_repack(int argc,
 	struct string_list names = STRING_LIST_INIT_DUP;
 	struct existing_packs existing = EXISTING_PACKS_INIT;
 	struct oidset drop_oids = OIDSET_INIT;
+	struct oidset drop_chunked_oids = OIDSET_INIT;
 	struct pack_geometry geometry = { 0 };
 	struct tempfile *refs_snapshot = NULL;
 	struct tempfile *kept_chunked_oids = NULL;
@@ -360,7 +371,8 @@ int cmd_repack(int argc,
 		 */
 		delete_redundant = 1;
 
-		ret = enumerate_promisor_blobs(repo, &po_args.filter_options, &drop_oids);
+		ret = enumerate_promisor_blobs(repo, &po_args.filter_options,
+					       &drop_oids, &drop_chunked_oids);
 
 		if (ret)
 			goto cleanup;
@@ -802,6 +814,14 @@ int cmd_repack(int argc,
 			opts |= PRUNE_PACKED_VERBOSE;
 		prune_packed_objects(repo, opts);
 
+		if (oidset_size(&drop_chunked_oids)) {
+			ret = for_each_loose_file_in_source(repo->objects->source,
+							    drop_chunked_blob,
+							    NULL, NULL, &drop_chunked_oids);
+			if (ret)
+				goto cleanup;
+		}
+
 		if (!keep_unreachable &&
 		    (!(pack_everything & LOOSEN_UNREACHABLE) ||
 		     unpack_unreachable) &&
@@ -826,6 +846,7 @@ cleanup:
 	string_list_clear(&keep_pack_list, 0);
 	string_list_clear(&names, 1);
 	oidset_clear(&drop_oids);
+	oidset_clear(&drop_chunked_oids);
 	existing_packs_release(&existing);
 	pack_geometry_release(&geometry);
 	pack_objects_args_release(&po_args);

@@ -2087,6 +2087,83 @@ int is_promisor_object(struct repository *r, const struct object_id *oid)
 	return oidset_contains(&promisor_objects, oid);
 }
 
+struct local_promisor_blob_data {
+	struct repository *repo;
+	struct oidset *wanted;
+	struct oidset *found;
+	enum object_type type;
+	size_t budget;
+};
+
+static void record_local_promisor_blob(struct local_promisor_blob_data *data,
+				       const struct object_id *oid)
+{
+	if (oidset_remove(data->wanted, oid))
+		oidset_insert(data->found, oid);
+}
+
+static int collect_local_promisor_blob(const struct object_id *oid,
+				      struct object_info *oi UNUSED,
+				      void *cb_data)
+{
+	struct local_promisor_blob_data *data = cb_data;
+	struct object_info tree_info = OBJECT_INFO_INIT;
+	struct tree_desc desc;
+	struct name_entry entry;
+	void *content;
+	size_t size;
+
+	if (!data->budget)
+		return 1;
+	data->budget--;
+	if (data->type == OBJ_BLOB) {
+		record_local_promisor_blob(data, oid);
+		return !oidset_size(data->wanted);
+	}
+	if (data->type != OBJ_TREE)
+		return 0;
+
+	/*
+	 * Inspect the recorded tree itself. A replacement tree or a gitlink
+	 * can name a blob that the promisor remote never supplied.
+	 */
+	tree_info.contentp = &content;
+	tree_info.sizep = &size;
+	if (odb_read_object_info_extended(data->repo->objects, oid, &tree_info,
+					  OBJECT_INFO_SKIP_FETCH_OBJECT) < 0)
+		return 0;
+	if (!init_tree_desc_gently(&desc, oid, content, size, 0)) {
+		while (data->budget && oidset_size(data->wanted) &&
+		       tree_entry_gently(&desc, &entry)) {
+			data->budget--;
+			if (object_type(entry.mode) == OBJ_BLOB)
+				record_local_promisor_blob(data, &entry.oid);
+		}
+	}
+	free(content);
+	return !data->budget || !oidset_size(data->wanted);
+}
+
+void collect_local_promisor_blobs(struct repository *r, struct oidset *wanted,
+				 struct oidset *found, size_t max_entries)
+{
+	struct local_promisor_blob_data data = {
+		.repo = r,
+		.wanted = wanted,
+		.found = found,
+		.budget = max_entries ? max_entries : SIZE_MAX,
+	};
+	struct object_info info = OBJECT_INFO_INIT;
+
+	if (!oidset_size(wanted))
+		return;
+	info.typep = &data.type;
+	odb_for_each_object(r->objects, &info, collect_local_promisor_blob, &data,
+			    ODB_FOR_EACH_OBJECT_PROMISOR_ONLY |
+			    ODB_FOR_EACH_OBJECT_PACK_ORDER |
+			    ODB_FOR_EACH_OBJECT_LOCAL_ONLY);
+}
+
 int parse_pack_header_option(const char *in, unsigned char *out, unsigned int *len)
 {
 	unsigned char *hdr;

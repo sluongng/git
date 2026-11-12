@@ -908,6 +908,8 @@ large blobs by reusing chunks already present locally. The command uses
 the negotiated Git object format for blob IDs and SHA-256 for chunk
 digests. Ordinary fetch can supply a blob when the command is
 unavailable or declines to serve it.
+Clients enable the command for a trusted promisor remote with
+`remote.<name>.blobChunks`.
 
 A request starts with `manifest` or `chunks` and ends with a flush packet.
 In `manifest` mode the client sends one `oid <oid>` line per wanted blob.

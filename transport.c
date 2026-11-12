@@ -10,6 +10,8 @@
 #include "pkt-line.h"
 #include "fetch-pack.h"
 #include "fetch-object-info.h"
+#include "blob-chunks.h"
+#include "odb.h"
 #include "remote.h"
 #include "connect.h"
 #include "send-pack.h"
@@ -484,6 +486,8 @@ static int fetch_refs_via_pack(struct transport *transport,
 	struct ref *refs = NULL;
 	struct fetch_pack_args args;
 	struct ref *refs_tmp = NULL, **to_fetch_dup = NULL;
+	const char *blob_chunks_version;
+	bool chunks_complete = false;
 
 	memset(&args, 0, sizeof(args));
 	args.uploadpack = data->options.uploadpack;
@@ -556,6 +560,56 @@ static int fetch_refs_via_pack(struct transport *transport,
 	DUP_ARRAY(to_fetch_dup, to_fetch, nr_heads);
 	to_fetch = to_fetch_dup;
 
+	if (nr_heads && data->version == protocol_v2 && args.from_promisor &&
+	    args.filter_options.choice == LOFC_BLOB_NONE &&
+	    !args.refetch && !args.depth && !args.deepen_since &&
+	    !args.deepen_not && !args.deepen_relative &&
+	    !args.check_self_contained_and_connected &&
+	    the_repository->object_storage_format == OBJECT_STORAGE_FORMAT_FILEV2 &&
+	    !the_repository->objects->transaction &&
+	    git_env_ulong(LAZY_FETCH_DEPTH_ENVIRONMENT, 0) &&
+	    git_env_bool(BLOB_CHUNKS_ENVIRONMENT, 0) &&
+	    !fetch_pack_fsck_objects() &&
+	    server_feature_v2("blob-chunks", &blob_chunks_version) &&
+	    blob_chunks_version && !strcmp(blob_chunks_version, "1")) {
+		struct oidset fetched = OIDSET_INIT;
+		int i;
+
+		for (i = 0; i < nr_heads && to_fetch[i]->exact_oid; i++)
+			;
+		if (i == nr_heads) {
+			int status = fetch_blob_chunks(the_repository, data->fd,
+						       transport->stateless_rpc,
+						       args.server_options, to_fetch, nr_heads,
+						       &fetched);
+
+			if (status < 0) {
+				warning(_("invalid blob-chunks exchange, retrying with a pack"));
+				exit(BLOB_CHUNKS_RETRY);
+			}
+			if (status) {
+				/*
+				 * A peer can close after the chunk response.
+				 * The parent retries only the missing OIDs with
+				 * a fresh transport.
+				 */
+				if (oidset_size(&fetched) != nr_heads)
+					exit(BLOB_CHUNKS_RETRY);
+				for (i = 0; i < nr_heads; i++)
+					to_fetch[i]->match_status = REF_MATCHED;
+				odb_reprepare(the_repository->objects);
+				chunks_complete = true;
+			}
+		}
+		oidset_clear(&fetched);
+		if (chunks_complete) {
+			data->finished_handshake = 0;
+			data->options.self_contained_and_connected = 0;
+			data->options.connectivity_checked = 0;
+			goto cleanup;
+		}
+	}
+
 	refs = fetch_pack(&args, data->fd,
 			  refs_tmp ? refs_tmp : transport->remote_refs,
 			  to_fetch, nr_heads, &data->shallow,
@@ -575,7 +629,7 @@ cleanup:
 	close(data->fd[0]);
 	if (data->fd[1] >= 0)
 		close(data->fd[1]);
-	if (finish_connect(data->conn))
+	if (finish_connect(data->conn) && !chunks_complete)
 		ret = -1;
 	data->conn = NULL;
 

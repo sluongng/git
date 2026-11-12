@@ -8,6 +8,7 @@ GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-filev2.sh
 
 # Test protocol v2 with 'git://' transport
 #
@@ -972,10 +973,252 @@ test_expect_success 'reject client packfile-uris if not advertised' '
 		upload-pack client <input
 '
 
+chunk_received_bytes () {
+	sed -n 's/.*"key":"received_bytes","value":"\([0-9]*\)".*/\1/p' "$1"
+}
+
+test_expect_success 'filev2 lazy fetch seeds the chunk store and reuses chunks' '
+	test_filev2_server chunks-origin &&
+	test_filev2_clone --no-local "$PWD/chunks-origin" chunks-client &&
+	old_blob=$(git -C chunks-client rev-parse origin/main:large) &&
+	test_must_fail env GIT_NO_LAZY_FETCH=1 git -C chunks-client cat-file -e "$old_blob" &&
+	GIT_TRACE_PACKET="$PWD/chunks-cold.pkt" GIT_TRACE2_EVENT_NESTING=10 \
+		GIT_TRACE2_EVENT="$PWD/chunks-cold.event" \
+		git -C chunks-client cat-file blob "$old_blob" >actual &&
+	test_cmp_bin chunks-origin/large actual &&
+	test_grep "fetch> command=blob-chunks" chunks-cold.pkt &&
+	test_grep ! "fetch> command=fetch" chunks-cold.pkt &&
+	cold_bytes=$(chunk_received_bytes chunks-cold.event) &&
+	test "$cold_bytes" -gt 0 &&
+
+	echo appended >>chunks-origin/large &&
+	git -C chunks-origin commit -am update &&
+	git -C chunks-client fetch origin &&
+	new_blob=$(git -C chunks-client rev-parse origin/main:large) &&
+	GIT_TRACE_PACKET="$PWD/chunks-warm.pkt" GIT_TRACE2_EVENT_NESTING=10 \
+		GIT_TRACE2_EVENT="$PWD/chunks-warm.event" \
+		git -C chunks-client cat-file blob "$new_blob" >actual &&
+	test_cmp_bin chunks-origin/large actual &&
+	test_grep "fetch> command=blob-chunks" chunks-warm.pkt &&
+	test_grep ! "fetch> command=fetch" chunks-warm.pkt &&
+	warm_bytes=$(chunk_received_bytes chunks-warm.event) &&
+	test "$warm_bytes" -gt 0 &&
+	test "$warm_bytes" -lt "$((cold_bytes / 4))" &&
+	test_path_is_file "chunks-client/.git/objects/$(test_oid_to_path "$new_blob")" &&
+	git -C chunks-client fsck
+'
+
+test_expect_success 'drop-filtered evicts a chunked promisor blob' '
+	git -C chunks-client repack -a --drop-filtered --filter=blob:limit=4194305 \
+		--dry-run >drop-list &&
+	test_grep "^$new_blob$" drop-list &&
+	git -C chunks-client repack -a --drop-filtered --filter=blob:limit=4194305 &&
+	test_must_fail env GIT_NO_LAZY_FETCH=1 git -C chunks-client cat-file -e "$new_blob" &&
+	git -C chunks-client cat-file blob "$new_blob" >actual &&
+	test_cmp_bin chunks-origin/large actual
+'
+
+test_expect_success 'drop-filtered keeps local blobs named by gitlinks or alternates' '
+	test_filev2_server chunks-promises &&
+	test_filev2_blob >gitlink-blob &&
+	echo gitlink >>gitlink-blob &&
+	gitlink_oid=$(git -C chunks-promises hash-object --stdin <gitlink-blob) &&
+	git -C chunks-promises update-index --add --cacheinfo "160000,$gitlink_oid,submodule" &&
+	git -C chunks-promises commit -m gitlink &&
+
+	test_filev2_server chunks-alternate-origin &&
+	test_filev2_blob >chunks-alternate-origin/alternate &&
+	echo alternate >>chunks-alternate-origin/alternate &&
+	test_filev2_blob >chunks-alternate-origin/alternate-only &&
+	echo alternate-only >>chunks-alternate-origin/alternate-only &&
+	git -C chunks-alternate-origin add alternate alternate-only &&
+	git -C chunks-alternate-origin commit -m alternate &&
+	test_filev2_clone --no-local "$PWD/chunks-alternate-origin" chunks-alternate &&
+	alternate_oid=$(git -C chunks-alternate rev-parse origin/main:alternate) &&
+	alternate_only_oid=$(git -C chunks-alternate rev-parse origin/main:alternate-only) &&
+	git -C chunks-alternate -c remote.origin.blobChunks=false \
+		cat-file blob "$alternate_oid" >actual &&
+	test_cmp_bin chunks-alternate-origin/alternate actual &&
+	git -C chunks-alternate -c remote.origin.blobChunks=false \
+		cat-file blob "$alternate_only_oid" >actual &&
+	test_cmp_bin chunks-alternate-origin/alternate-only actual &&
+
+	test_filev2_clone --no-local "$PWD/chunks-promises" chunks-local &&
+	git -C chunks-local hash-object -w --stdin <gitlink-blob &&
+	git -C chunks-local hash-object -w --stdin <chunks-alternate-origin/alternate &&
+	echo "$PWD/chunks-alternate/.git/objects" >chunks-local/.git/objects/info/alternates &&
+	promised_oid=$(git -C chunks-local rev-parse origin/main:large) &&
+	git -C chunks-local cat-file blob "$promised_oid" >actual &&
+	test_cmp_bin chunks-promises/large actual &&
+
+	git -C chunks-local repack -a --drop-filtered --filter=blob:limit=4194305 \
+		--dry-run >drop-list &&
+	printf "%s\n" "$promised_oid" "$alternate_oid" "$alternate_only_oid" | sort >expect &&
+	sort drop-list >actual &&
+	test_cmp expect actual &&
+	git -C chunks-local repack -a --drop-filtered --filter=blob:limit=4194305 &&
+	rm chunks-local/.git/objects/info/alternates &&
+	test_must_fail env GIT_NO_LAZY_FETCH=1 git -C chunks-local cat-file -e "$promised_oid" &&
+	test_must_fail env GIT_NO_LAZY_FETCH=1 git -C chunks-local cat-file -e "$alternate_only_oid" &&
+	test_path_is_file "chunks-local/.git/objects/$(test_oid_to_path "$gitlink_oid")" &&
+	test_path_is_file "chunks-local/.git/objects/$(test_oid_to_path "$alternate_oid")" &&
+	GIT_NO_LAZY_FETCH=1 git -C chunks-local cat-file blob "$gitlink_oid" >actual &&
+	test_cmp_bin gitlink-blob actual &&
+	GIT_NO_LAZY_FETCH=1 git -C chunks-local cat-file blob "$alternate_oid" >actual &&
+	test_cmp_bin chunks-alternate-origin/alternate actual
+'
+
+test_expect_success 'filev2 lazy fetch falls back for packed-only blobs' '
+	test_filev2_blob >chunks-origin/packed &&
+	echo packed >>chunks-origin/packed &&
+	GIT_OBJECT_STORAGE_FORMAT=files git -C chunks-origin add packed &&
+	git -C chunks-origin commit -m packed &&
+	git -C chunks-origin repack -a -d &&
+	git -C chunks-client fetch origin &&
+	packed_blob=$(git -C chunks-client rev-parse origin/main:packed) &&
+	test_path_is_missing "chunks-origin/.git/objects/$(test_oid_to_path "$packed_blob")" &&
+	GIT_TRACE_PACKET="$PWD/chunks-packed.pkt" \
+		git -C chunks-client cat-file blob "$packed_blob" >actual &&
+	test_cmp_bin chunks-origin/packed actual &&
+	test_grep "fetch> command=blob-chunks" chunks-packed.pkt &&
+	test_grep "fetch< unavailable $packed_blob" chunks-packed.pkt &&
+	test_grep "fetch> want $packed_blob" chunks-packed.pkt
+'
+
+test_expect_success 'filev2 sends only remaining wants to the pack fallback' '
+	test_filev2_clone --no-local "$PWD/chunks-origin" chunks-mixed &&
+	GIT_TRACE_PACKET="$PWD/chunks-mixed.pkt" \
+		git -C chunks-mixed checkout -f main &&
+	test_cmp_bin chunks-origin/large chunks-mixed/large &&
+	test_cmp_bin chunks-origin/packed chunks-mixed/packed &&
+	test_grep "fetch> oid $new_blob$" chunks-mixed.pkt &&
+	test_grep "fetch> oid $packed_blob$" chunks-mixed.pkt &&
+	test_grep "fetch> want $packed_blob" chunks-mixed.pkt &&
+	test_grep ! "fetch> want $new_blob" chunks-mixed.pkt
+'
+
+test_expect_success 'filev2 lazy fetch works with a peer lacking blob-chunks' '
+	git -C chunks-origin config uploadpack.allowBlobChunks false &&
+	echo legacy >>chunks-origin/large &&
+	git -C chunks-origin commit -am legacy &&
+	git -C chunks-client fetch origin &&
+	legacy_blob=$(git -C chunks-client rev-parse origin/main:large) &&
+	GIT_TRACE_PACKET="$PWD/chunks-legacy.pkt" \
+		git -C chunks-client cat-file blob "$legacy_blob" >actual &&
+	test_cmp_bin chunks-origin/large actual &&
+	test_grep ! "blob-chunks" chunks-legacy.pkt &&
+	test_grep "fetch> want $legacy_blob" chunks-legacy.pkt
+'
+
+test_expect_success 'filev2 lazy fetch requires a per-remote chunk opt-in' '
+	git -C chunks-origin config uploadpack.allowBlobChunks true &&
+	echo default-client >>chunks-origin/large &&
+	git -C chunks-origin commit -am default-client &&
+	git -C chunks-client fetch origin &&
+	opt_out_blob=$(git -C chunks-client rev-parse origin/main:large) &&
+	GIT_TRACE_PACKET="$PWD/chunks-opt-out.pkt" \
+		git -C chunks-client -c remote.origin.blobChunks=false \
+		cat-file blob "$opt_out_blob" >actual &&
+	test_cmp_bin chunks-origin/large actual &&
+	test_grep "fetch< blob-chunks=1" chunks-opt-out.pkt &&
+	test_grep ! "fetch> command=blob-chunks" chunks-opt-out.pkt &&
+	test_grep "fetch> want $opt_out_blob" chunks-opt-out.pkt
+'
+
+test_expect_success 'filev2 uses a pack for a blob with no local promisor record' '
+	echo directly-requested >>chunks-origin/large &&
+	git -C chunks-origin commit -am directly-requested &&
+	direct_blob=$(git -C chunks-origin rev-parse HEAD:large) &&
+	GIT_TRACE_PACKET="$PWD/chunks-direct.pkt" \
+		git -C chunks-client cat-file blob "$direct_blob" >actual &&
+	test_cmp_bin chunks-origin/large actual &&
+	test_grep ! "fetch> command=blob-chunks" chunks-direct.pkt &&
+	test_grep "fetch> want $direct_blob" chunks-direct.pkt &&
+	git -C chunks-client repack -a --drop-filtered --filter=blob:limit=4194305 \
+		--dry-run >drop-list &&
+	test_grep "^$direct_blob$" drop-list
+'
+
+for chunk_reply in malformed unavailable
+do
+	test_expect_success PERL "blob-chunks $chunk_reply reply retries with a pack" '
+		echo "$chunk_reply" >>chunks-origin/large &&
+		git -C chunks-origin commit -am "$chunk_reply" &&
+		git -C chunks-client fetch origin &&
+		retry_blob=$(git -C chunks-client rev-parse origin/main:large) &&
+		>"$PWD/break-chunks-once" &&
+		write_script "$PWD/chunks-upload-pack" <<-\EOF &&
+		if test -f "$BLOB_CHUNKS_BREAK_MARKER"
+		then
+			rm "$BLOB_CHUNKS_BREAK_MARKER" &&
+			test-tool pkt-line pack version\ 2 fetch blob-chunks=1 \
+				"object-format=$BLOB_CHUNKS_TEST_HASH" 0000 &&
+			perl -e "
+				my \$oid;
+				while (read(STDIN, \$header, 4) == 4 && \$header ne q(0000)) {
+					next unless hex(\$header) > 4;
+					read(STDIN, \$payload, hex(\$header) - 4);
+					\$oid = \$1 if \$payload =~ /^oid ([0-9a-f]+)\n?\$/;
+				}
+				if (\$ENV{BLOB_CHUNKS_TEST_REPLY} eq q(unavailable)) {
+					my \$reply = qq(unavailable \$oid\n);
+					printf q(%04x%s0000), length(\$reply) + 4, \$reply;
+				} else {
+					print q(zzzz);
+				}
+			"
+		else
+			exec git upload-pack "$@"
+		fi
+		EOF
+		test_config -C chunks-client remote.origin.uploadpack "\"$PWD/chunks-upload-pack\"" &&
+		BLOB_CHUNKS_BREAK_MARKER="$PWD/break-chunks-once" BLOB_CHUNKS_TEST_HASH=$(test_oid algo) \
+			BLOB_CHUNKS_TEST_REPLY="$chunk_reply" GIT_TRACE_PACKET="$PWD/chunks-$chunk_reply.pkt" \
+			git -C chunks-client cat-file blob "$retry_blob" >actual &&
+		test_cmp_bin chunks-origin/large actual &&
+		test_grep "fetch> command=blob-chunks" "chunks-$chunk_reply.pkt" &&
+		test_grep "fetch> want $retry_blob" "chunks-$chunk_reply.pkt"
+	'
+done
+
+test_expect_success 'filev2 refuses valid chunks for the wrong canonical blob' '
+	test_filev2_server chunks-wrong &&
+	test_filev2_clone --no-local "$PWD/chunks-wrong" chunks-check &&
+	correct_blob=$(git -C chunks-check rev-parse origin/main:large) &&
+	echo "$correct_blob" >objects-to-pack &&
+	git -C chunks-wrong pack-objects .git/objects/pack/pack <objects-to-pack &&
+	test-tool genrandom wrong-content 5m >wrong-contents &&
+	wrong_blob=$(git -C chunks-wrong hash-object -w --stdin <wrong-contents) &&
+	correct_manifest=chunks-wrong/.git/objects/$(test_oid_to_path "$correct_blob") &&
+	wrong_manifest=chunks-wrong/.git/objects/$(test_oid_to_path "$wrong_blob") &&
+	mv "$correct_manifest" saved-manifest &&
+	test_when_finished "mv -f saved-manifest \"$correct_manifest\"" &&
+	cp "$wrong_manifest" "$correct_manifest" &&
+	test-tool hexdump <"$wrong_manifest" >manifest.hex &&
+	wrong_digest=$(awk "{ for (i = 21; i <= 52; i++) printf \"%s\", \$i }" <manifest.hex) &&
+	GIT_TRACE_PACKET="$PWD/chunks-wrong.pkt" \
+		git -C chunks-check cat-file blob "$correct_blob" >actual &&
+	test_cmp_bin chunks-wrong/large actual &&
+	test_grep "fetch< data $correct_blob" chunks-wrong.pkt &&
+	test_grep "fetch> want $correct_blob" chunks-wrong.pkt &&
+	test_path_is_missing "chunks-check/.git/objects/chunks/$(test_oid_to_path "$wrong_digest")"
+'
+
 # Test protocol v2 with 'http://' transport
 #
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
+
+test_expect_success 'filev2 lazy fetch negotiates chunks over smart HTTP' '
+	test_filev2_server "$HTTPD_DOCUMENT_ROOT_PATH/http_chunks" &&
+	test_filev2_clone "$HTTPD_URL/smart/http_chunks" http_chunks_client &&
+	http_blob=$(git -C http_chunks_client rev-parse origin/main:large) &&
+	GIT_TRACE_PACKET="$PWD/http-chunks.pkt" \
+		git -C http_chunks_client cat-file blob "$http_blob" >actual &&
+	test_cmp_bin "$HTTPD_DOCUMENT_ROOT_PATH/http_chunks/large" actual &&
+	test_grep "fetch> command=blob-chunks" http-chunks.pkt &&
+	test_grep ! "fetch> command=fetch" http-chunks.pkt
+'
 
 test_expect_success 'create repo to be served by http:// transport' '
 	git init "$HTTPD_DOCUMENT_ROOT_PATH/http_parent" &&

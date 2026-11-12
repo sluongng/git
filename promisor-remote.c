@@ -1,6 +1,7 @@
 #define USE_THE_REPOSITORY_VARIABLE
 
 #include "git-compat-util.h"
+#include "blob-chunks.h"
 #include "gettext.h"
 #include "hex.h"
 #include "odb.h"
@@ -21,10 +22,26 @@ struct promisor_remote_config {
 	struct promisor_remote **promisors_tail;
 };
 
-static int fetch_objects(struct repository *repo,
-			 const char *remote_name,
-			 const struct object_id *oids,
-			 int oid_nr, int depth)
+static int remove_fetched_oids(struct repository *repo, struct object_id **oids,
+			       int oid_nr, int to_free);
+
+static bool use_blob_chunks(struct repository *repo, const char *remote_name)
+{
+	char *key;
+	int enabled = 0;
+
+	if (repo->object_storage_format != OBJECT_STORAGE_FORMAT_FILEV2)
+		return false;
+	key = xstrfmt("remote.%s.blobchunks", remote_name);
+	repo_config_get_bool(repo, key, &enabled);
+	free(key);
+	return enabled;
+}
+
+static int fetch_objects_once(struct repository *repo,
+			      const char *remote_name,
+			      const struct object_id *oids,
+			      int oid_nr, int depth, bool blob_chunks)
 {
 	struct child_process child = CHILD_PROCESS_INIT;
 	int i;
@@ -42,6 +59,8 @@ static int fetch_objects(struct repository *repo,
 	if (!repo_config_get_bool(repo, "promisor.quiet", &quiet) && quiet)
 		strvec_push(&child.args, "--quiet");
 	strvec_pushf(&child.env, "%s=%d", LAZY_FETCH_DEPTH_ENVIRONMENT, depth + 1);
+	strvec_push(&child.env, blob_chunks ? BLOB_CHUNKS_ENVIRONMENT "=1" :
+		     BLOB_CHUNKS_ENVIRONMENT);
 	if (start_command(&child))
 		die(_("promisor-remote: unable to fork off fetch subprocess"));
 	child_in = xfdopen(child.in, "w");
@@ -57,7 +76,24 @@ static int fetch_objects(struct repository *repo,
 
 	if (fclose(child_in) < 0)
 		die_errno(_("promisor-remote: could not close stdin to fetch subprocess"));
-	return finish_command(&child) ? -1 : 0;
+	return finish_command(&child);
+}
+
+static int fetch_objects(struct repository *repo, const char *remote_name,
+			 const struct object_id *oids, int oid_nr, int depth)
+{
+	int ret = fetch_objects_once(repo, remote_name, oids, oid_nr, depth,
+				     use_blob_chunks(repo, remote_name));
+
+	if (ret == BLOB_CHUNKS_RETRY) {
+		struct object_id *remaining = (struct object_id *)oids;
+		int nr = remove_fetched_oids(repo, &remaining, oid_nr, 0);
+
+		ret = nr ? fetch_objects_once(repo, remote_name, remaining, nr, depth, false) : 0;
+		if (remaining != oids)
+			free(remaining);
+	}
+	return ret ? -1 : 0;
 }
 
 static struct promisor_remote *promisor_remote_new(struct promisor_remote_config *config,

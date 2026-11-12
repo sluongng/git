@@ -100,6 +100,12 @@ remote.<name>.advertisedAs::
 	information, tracing and debugging purposes. Users should not
 	typically modify or create such configuration entries.
 
+remote.<name>.blobChunks::
+	Enable experimental chunk negotiation for lazy fetches from this
+	promisor remote in a `filev2` repository. Defaults to false.
+	Enable it only for trusted remotes. A server can infer which
+	chunks the client already has from which chunks it requests.
+
 remote.<name>.partialclonefilter::
 	The filter that will be applied when fetching from this	promisor remote.
 	Changing or clearing this value will only affect fetches for new commits.

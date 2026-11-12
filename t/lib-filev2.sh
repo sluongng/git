@@ -11,3 +11,8 @@ test_filev2_server () {
 	git -C "$1" add large &&
 	test_commit -C "$1" initial
 }
+
+test_filev2_clone () {
+	git -c protocol.version=2 clone --no-checkout --object-storage-format=filev2 \
+		--filter=blob:limit=4194305 -c remote.origin.blobChunks=true "$@"
+}

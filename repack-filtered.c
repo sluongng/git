@@ -8,6 +8,7 @@
 #include "list-objects-filter-options.h"
 #include "list-objects-filter.h"
 #include "odb.h"
+#include "odb/chunked.h"
 #include "promisor-remote.h"
 
 int write_filtered_pack(const struct write_pack_opts *opts,
@@ -85,14 +86,26 @@ static int collect_promisor_blob(const struct object_id *oid,
 	return 0;
 }
 
+static int collect_chunked_blob(const struct object_id *oid,
+				const char *path, void *cb_data)
+{
+	struct oidset *set = cb_data;
+
+	if (odb_chunked_is_manifest_file(path))
+		oidset_insert(set, oid);
+	return 0;
+}
+
 int enumerate_promisor_blobs(struct repository *repo,
 			     const struct list_objects_filter_options *filter,
-			     struct oidset *to_drop)
+			     struct oidset *to_drop,
+			     struct oidset *loose_to_drop)
 {
 	struct oidset all_promisor_blobs = OIDSET_INIT;
+	struct oidset chunked_blobs = OIDSET_INIT;
 	struct collect_cb_data cb = {
 		.repo = repo,
-		.set = &all_promisor_blobs
+		.set = &all_promisor_blobs,
 	};
 	int ret = 0;
 
@@ -112,9 +125,8 @@ int enumerate_promisor_blobs(struct repository *repo,
 	 * contains promisor blobs. Direct enumeration via
 	 * ODB_FOR_EACH_OBJECT_PROMISOR_ONLY is the correct approach.
 	 */
-	ret = odb_for_each_object(repo->objects, NULL,
-			collect_promisor_blob, &cb,
-			ODB_FOR_EACH_OBJECT_PROMISOR_ONLY);
+	ret = odb_for_each_object(repo->objects, NULL, collect_promisor_blob, &cb,
+				  ODB_FOR_EACH_OBJECT_PROMISOR_ONLY);
 	if (ret)
 		goto cleanup;
 
@@ -126,8 +138,26 @@ int enumerate_promisor_blobs(struct repository *repo,
 		filter,
 		&all_promisor_blobs,
 		to_drop);
+	if (ret || repo->object_storage_format != OBJECT_STORAGE_FORMAT_FILEV2)
+		goto cleanup;
+
+	/*
+	 * The packed filter also applies to alternate packs that repack may
+	 * copy. Unlinking a local manifest requires a local promise.
+	 */
+	oidset_clear(&all_promisor_blobs);
+	ret = for_each_loose_file_in_source(repo->objects->source, collect_chunked_blob,
+					    NULL, NULL, &chunked_blobs);
+	if (ret)
+		goto cleanup;
+	collect_local_promisor_blobs(repo, &chunked_blobs, &all_promisor_blobs, 0);
+	ret = list_objects_filter__filter_oidset(repo, filter, &all_promisor_blobs,
+						 loose_to_drop);
+	if (!ret)
+		oidset_insert_from_set(to_drop, loose_to_drop);
 
 cleanup:
+	oidset_clear(&chunked_blobs);
 	oidset_clear(&all_promisor_blobs);
 	return ret;
 }
